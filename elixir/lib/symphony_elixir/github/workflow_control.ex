@@ -270,11 +270,16 @@ defmodule SymphonyElixir.GitHub.WorkflowControl do
   defp formal_review_trigger(checkpoint, context, authorized) do
     minimum_id = get_in(checkpoint, ["cursor", "review_id"]) || 0
 
-    latest_by_reviewer =
+    actionable_reviews =
       context
       |> Map.get("reviews", [])
-      |> Enum.filter(&(event_id(&1) > minimum_id and authorized?(&1, authorized)))
+      |> Enum.filter(&authorized?(&1, authorized))
       |> Enum.filter(&(normalize_review_state(&1["state"]) in ["approved", "changes_requested"]))
+
+    new_review? = Enum.any?(actionable_reviews, &(event_id(&1) > minimum_id))
+
+    latest_by_reviewer =
+      actionable_reviews
       |> Enum.sort_by(&event_id/1)
       |> Enum.reduce(%{}, fn review, acc -> Map.put(acc, get_in(review, ["user", "login"]), review) end)
       |> Map.values()
@@ -289,7 +294,7 @@ defmodule SymphonyElixir.GitHub.WorkflowControl do
       |> Enum.filter(&(normalize_review_state(&1["state"]) == "approved"))
       |> Enum.max_by(&event_id/1, fn -> nil end)
 
-    review = change_request || approval
+    review = if new_review?, do: change_request || approval
 
     if review do
       review
@@ -307,16 +312,14 @@ defmodule SymphonyElixir.GitHub.WorkflowControl do
           [_, scope] = Regex.run(~r/^\/symphony\s+approve\s+(spec|plan|implementation)\s*$/i, body)
           %{"command" => "approve", "scope" => String.downcase(scope)}
 
-        Regex.match?(~r/^\/symphony\s+revise(?:\s+(spec|plan|implementation))?(?:\s+(.+))?\s*$/is, body) ->
-          [_, scope, instructions] =
-            Regex.run(
-              ~r/^\/symphony\s+revise(?:\s+(spec|plan|implementation))?(?:\s+(.+))?\s*$/is,
+        captures =
+            Regex.named_captures(
+              ~r/^\/symphony\s+revise(?:\s+(?<scope>spec|plan|implementation))?(?:\s+(?<instructions>.+))?\s*$/is,
               body
-            )
-
+            ) ->
           %{"command" => "revise"}
-          |> maybe_put("scope", normalize_optional(scope))
-          |> maybe_put("instructions", normalize_optional(instructions))
+          |> maybe_put("scope", normalize_scope(captures["scope"]))
+          |> maybe_put("instructions", normalize_text(captures["instructions"]))
 
         Regex.match?(~r/^\/symphony\s+(retry|status|cancel)\s*$/i, body) ->
           [_, command] = Regex.run(~r/^\/symphony\s+(retry|status|cancel)\s*$/i, body)
@@ -361,14 +364,21 @@ defmodule SymphonyElixir.GitHub.WorkflowControl do
 
   defp normalize_association(_value), do: ""
 
-  defp normalize_optional(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
+  defp normalize_scope(value) do
+    case normalize_text(value) do
+      nil -> nil
       normalized -> String.downcase(normalized)
     end
   end
 
-  defp normalize_optional(_value), do: nil
+  defp normalize_text(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_text(_value), do: nil
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

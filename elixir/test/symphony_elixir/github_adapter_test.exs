@@ -4,6 +4,8 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
   alias SymphonyElixir.GitHub.Adapter, as: GitHubAdapter
   alias SymphonyElixir.GitHub.AgentTool, as: GitHubAgentTool
   alias SymphonyElixir.GitHub.Client, as: GitHubClient
+  alias SymphonyElixir.GitHub.WorkflowControl
+  alias SymphonyElixir.Tracker.Issue
 
   defmodule FakeGitHubClient do
     def fetch_issues_by_states(states) do
@@ -64,7 +66,10 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
     assert {:ok, ["42"]} = GitHubAdapter.fetch_issues_by_ids(["42"])
     assert_receive {:github_ids_called, ["42"]}
 
-    assert [%{"name" => "github_api"}] = GitHubAdapter.agent_tool_specs()
+    assert Enum.map(GitHubAdapter.agent_tool_specs(), & &1["name"]) == [
+             "github_api",
+             "github_workflow_checkpoint"
+           ]
 
     assert GitHubAdapter.execute_agent_tool(
              "github_api",
@@ -304,7 +309,11 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
   test "github_api reports unsupported tools, malformed calls, and client failures" do
     unsupported = GitHubAgentTool.execute("not_github_api", %{}, [])
     assert unsupported["success"] == false
-    assert Jason.decode!(unsupported["output"])["error"]["supportedTools"] == ["github_api"]
+
+    assert Jason.decode!(unsupported["output"])["error"]["supportedTools"] == [
+             "github_api",
+             "github_workflow_checkpoint"
+           ]
 
     Enum.each(
       [
@@ -392,8 +401,234 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
              token_env
            ]
 
-    assert [%{"name" => "github_api"}] = binding.tool_specs
+    assert Enum.map(binding.tool_specs, & &1["name"]) == [
+             "github_api",
+             "github_workflow_checkpoint"
+           ]
+
     assert :ok = Config.validate!()
+  end
+
+  test "workflow control enriches a labeled issue and reconstructs an authorized answer" do
+    marker =
+      WorkflowControl.render_comment(%{
+        "state" => "awaiting_input",
+        "phase" => "clarify",
+        "summary" => "A decision is needed.",
+        "prompt" => "Which retention period?"
+      })
+
+    requests = fn "GET", "/repos/octo/repo/issues/42/comments", params, nil, _settings ->
+      page = params["page"]
+
+      body =
+        case page do
+          1 -> [raw_comment(10, "OWNER", marker)]
+          _ -> []
+        end
+
+      {:ok, %{status: 200, body: body}}
+    end
+
+    issue = GitHubClient.normalize_issue_for_test(raw_issue(42), "octo/repo")
+
+    assert {:ok, waiting} =
+             GitHubClient.enrich_issue_for_test(issue, workflow_tracker_settings(), requests)
+
+    refute waiting.dispatchable
+    assert waiting.native_ref["workflow_control"]["state"] == "awaiting_input"
+    assert waiting.native_ref["workflow_control"]["trigger"] == nil
+
+    answered_requests = fn "GET", "/repos/octo/repo/issues/42/comments", params, nil, _settings ->
+      body =
+        case params["page"] do
+          1 -> [raw_comment(10, "OWNER", marker), raw_comment(11, "COLLABORATOR", "Use 30 days.")]
+          _ -> []
+        end
+
+      {:ok, %{status: 200, body: body}}
+    end
+
+    assert {:ok, answered} =
+             GitHubClient.enrich_issue_for_test(issue, workflow_tracker_settings(), answered_requests)
+
+    assert answered.dispatchable
+    assert answered.native_ref["workflow_control"]["trigger"]["kind"] == "answer"
+    assert answered.native_ref["workflow_control"]["trigger"]["body"] == "Use 30 days."
+  end
+
+  test "workflow control polls pull request surfaces only while awaiting review" do
+    marker =
+      WorkflowControl.render_comment(%{
+        "state" => "awaiting_review",
+        "phase" => "review",
+        "summary" => "PR #7 is ready.",
+        "pr_number" => 7,
+        "cursor" => %{"review_id" => 100, "pr_comment_id" => 200, "review_comment_id" => 300}
+      })
+
+    request_fun = fn "GET", path, params, nil, _settings ->
+      send(self(), {:workflow_request, path, params})
+
+      body =
+        case path do
+          "/repos/octo/repo/issues/42/comments" -> [raw_comment(10, "OWNER", marker)]
+          "/repos/octo/repo/pulls/7" -> %{"number" => 7, "state" => "open", "merged" => false}
+          "/repos/octo/repo/issues/7/comments" -> []
+          "/repos/octo/repo/pulls/7/comments" -> []
+          "/repos/octo/repo/pulls/7/reviews" -> [raw_review(101, "reviewer", "MEMBER", "CHANGES_REQUESTED")]
+        end
+
+      {:ok, %{status: 200, body: body}}
+    end
+
+    issue = GitHubClient.normalize_issue_for_test(raw_issue(42), "octo/repo")
+
+    assert {:ok, enriched} =
+             GitHubClient.enrich_issue_for_test(issue, workflow_tracker_settings(), request_fun)
+
+    assert enriched.dispatchable
+
+    assert enriched.native_ref["workflow_control"]["trigger"] == %{
+             "kind" => "review",
+             "id" => 101,
+             "body" => "Review 101",
+             "author" => "reviewer",
+             "state" => "changes_requested"
+           }
+
+    assert_receive {:workflow_request, "/repos/octo/repo/pulls/7", %{}}
+    assert_receive {:workflow_request, "/repos/octo/repo/issues/7/comments", %{"page" => 1}}
+    assert_receive {:workflow_request, "/repos/octo/repo/pulls/7/comments", %{"page" => 1}}
+    assert_receive {:workflow_request, "/repos/octo/repo/pulls/7/reviews", %{"page" => 1}}
+  end
+
+  test "github_workflow_checkpoint validates a pushed approval SHA and posts to the current issue" do
+    settings = workflow_tracker_settings()
+
+    response =
+      GitHubAgentTool.execute(
+        "github_workflow_checkpoint",
+        %{
+          "state" => "awaiting_approval",
+          "phase" => "specify",
+          "summary" => "Specification ready.",
+          "gate" => "spec",
+          "branch" => "symphony/gh-42-auth",
+          "head_sha" => String.duplicate("a", 40)
+        },
+        issue: %Issue{id: "42", native_ref: %{"number" => 42, "repo" => "octo/repo"}},
+        tracker_settings: settings,
+        github_client: fn method, path, params, body, _opts ->
+          send(self(), {:checkpoint_request, method, path, params, body})
+
+          response_body =
+            case path do
+              "/repos/octo/repo/commits/" <> _sha ->
+                %{"sha" => String.duplicate("a", 40)}
+
+              "/repos/octo/repo/branches/symphony%2Fgh-42-auth" ->
+                %{"commit" => %{"sha" => String.duplicate("a", 40)}}
+
+              "/repos/octo/repo/issues/42/comments" ->
+                %{"id" => 99, "html_url" => "https://github.test/comment/99"}
+            end
+
+          {:ok, %{status: if(method == "POST", do: 201, else: 200), body: response_body}}
+        end
+      )
+
+    assert response["success"]
+
+    assert_receive {:checkpoint_request, "GET", "/repos/octo/repo/commits/" <> _, %{}, nil}
+
+    assert_receive {:checkpoint_request, "GET", "/repos/octo/repo/branches/symphony%2Fgh-42-auth", %{}, nil}
+
+    assert_receive {:checkpoint_request, "POST", "/repos/octo/repo/issues/42/comments", %{}, %{"body" => body}}
+    assert {:ok, %{"gate" => "spec"}} = WorkflowControl.decode_checkpoint(body)
+  end
+
+  test "github_workflow_checkpoint rejects disabled control invalid context and stale branch heads" do
+    issue = %Issue{id: "42", native_ref: %{"number" => 42, "repo" => "octo/repo"}}
+    args = %{"state" => "blocked", "phase" => "push", "summary" => "Cannot push."}
+
+    refute GitHubAgentTool.execute(
+             "github_workflow_checkpoint",
+             args,
+             issue: issue,
+             tracker_settings: tracker_settings(),
+             github_client: fn _, _, _, _, _ -> flunk("disabled control must not call GitHub") end
+           )["success"]
+
+    stale =
+      GitHubAgentTool.execute(
+        "github_workflow_checkpoint",
+        %{
+          "state" => "awaiting_approval",
+          "phase" => "plan",
+          "summary" => "Plan ready.",
+          "gate" => "plan",
+          "branch" => "topic",
+          "head_sha" => String.duplicate("a", 40)
+        },
+        issue: issue,
+        tracker_settings: workflow_tracker_settings(),
+        github_client: fn _method, path, _params, _body, _opts ->
+          body =
+            if String.contains?(path, "/branches/"),
+              do: %{"commit" => %{"sha" => String.duplicate("b", 40)}},
+              else: %{"sha" => String.duplicate("a", 40)}
+
+          {:ok, %{status: 200, body: body}}
+        end
+      )
+
+    refute stale["success"]
+    assert Jason.decode!(stale["output"])["error"]["reason"] =~ "workflow_head_mismatch"
+  end
+
+  test "github_workflow_checkpoint records current pull request event cursors" do
+    response =
+      GitHubAgentTool.execute(
+        "github_workflow_checkpoint",
+        %{
+          "state" => "awaiting_review",
+          "phase" => "review",
+          "summary" => "PR #7 is ready for review.",
+          "pr_number" => 7
+        },
+        issue: %Issue{id: "42", native_ref: %{"number" => 42, "repo" => "octo/repo"}},
+        tracker_settings: workflow_tracker_settings(),
+        github_client: fn method, path, _params, body, _opts ->
+          response_body =
+            case path do
+              "/repos/octo/repo/issues/7/comments" ->
+                [%{"id" => 201}]
+
+              "/repos/octo/repo/pulls/7/comments" ->
+                [%{"id" => 301}]
+
+              "/repos/octo/repo/pulls/7/reviews" ->
+                [%{"id" => 101}]
+
+              "/repos/octo/repo/issues/42/comments" ->
+                send(self(), {:review_checkpoint_body, body["body"]})
+                %{"id" => 400}
+            end
+
+          {:ok, %{status: if(method == "POST", do: 201, else: 200), body: response_body}}
+        end
+      )
+
+    assert response["success"]
+    assert_receive {:review_checkpoint_body, body}
+    assert {:ok, checkpoint} = WorkflowControl.decode_checkpoint(body)
+
+    assert checkpoint["cursor"] == %{
+             "pr_comment_id" => 201,
+             "review_comment_id" => 301,
+             "review_id" => 101
+           }
   end
 
   defp tracker_settings(provider_overrides \\ %{}) do
@@ -412,6 +647,15 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
     }
   end
 
+  defp workflow_tracker_settings do
+    tracker_settings(%{
+      "workflow_control" => %{
+        "enabled" => true,
+        "authorized_associations" => ["OWNER", "MEMBER", "COLLABORATOR"]
+      }
+    })
+  end
+
   defp raw_issue(number) do
     %{
       "number" => number,
@@ -425,6 +669,27 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
       "labels" => [%{"name" => " Bug "}, %{"name" => "bug"}, %{"name" => "Platform"}],
       "created_at" => "2026-01-01T00:00:00Z",
       "updated_at" => "2026-01-02T00:00:00Z"
+    }
+  end
+
+  defp raw_comment(id, association, body) do
+    %{
+      "id" => id,
+      "author_association" => association,
+      "body" => body,
+      "user" => %{"login" => "user-#{id}"},
+      "created_at" => "2026-09-24T00:00:00Z"
+    }
+  end
+
+  defp raw_review(id, login, association, state) do
+    %{
+      "id" => id,
+      "state" => state,
+      "author_association" => association,
+      "user" => %{"login" => login},
+      "body" => "Review #{id}",
+      "submitted_at" => "2026-09-24T00:00:00Z"
     }
   end
 

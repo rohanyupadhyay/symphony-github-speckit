@@ -103,7 +103,7 @@ defmodule SymphonyElixir.GitHub.WorkflowControlTest do
                "kind" => "command",
                "command" => "revise",
                "scope" => "implementation",
-               "instructions" => "cover the timeout path"
+               "instructions" => "Cover the Timeout Path"
              }
            } =
              WorkflowControl.derive(
@@ -112,7 +112,7 @@ defmodule SymphonyElixir.GitHub.WorkflowControlTest do
                  comment(
                    24,
                    "COLLABORATOR",
-                   "/symphony revise implementation cover the timeout path"
+                   "/symphony revise implementation Cover the Timeout Path"
                  )
                ],
                %{},
@@ -137,6 +137,13 @@ defmodule SymphonyElixir.GitHub.WorkflowControlTest do
                  @authorized
                )
     end
+
+    assert %{dispatchable: true, trigger: %{"command" => "revise"}} =
+             WorkflowControl.derive(
+               [checkpoint, comment(33, "OWNER", "/symphony revise")],
+               %{},
+               @authorized
+             )
   end
 
   test "review state prioritizes unresolved change requests and ignores general PR comments" do
@@ -168,6 +175,27 @@ defmodule SymphonyElixir.GitHub.WorkflowControlTest do
              dispatchable: true,
              trigger: %{"kind" => "review", "state" => "approved", "id" => 103}
            } = WorkflowControl.derive([checkpoint], superseded, @authorized)
+  end
+
+  test "a new approval does not override another reviewer's pre-checkpoint change request" do
+    checkpoint =
+      checkpoint_comment(45, "awaiting_review", %{
+        "pr_number" => 7,
+        "cursor" => %{"review_id" => 101}
+      })
+
+    context = %{
+      "pull_request" => %{"number" => 7, "state" => "open", "merged" => false},
+      "reviews" => [
+        review(101, "bob", "MEMBER", "CHANGES_REQUESTED"),
+        review(102, "alice", "COLLABORATOR", "APPROVED")
+      ]
+    }
+
+    assert %{
+             dispatchable: true,
+             trigger: %{"kind" => "review", "state" => "changes_requested", "id" => 101}
+           } = WorkflowControl.derive([checkpoint], context, @authorized)
   end
 
   test "review state dispatches explicit PR commands and merge or close events" do

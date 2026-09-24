@@ -1019,6 +1019,35 @@ defmodule SymphonyElixir.CoreTest do
              AgentRunner.continue_with_issue_for_test(issue, fetcher)
   end
 
+  test "agent runner stops continuation while GitHub workflow control awaits input" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_required_labels: ["symphony"])
+
+    issue = %Issue{
+      id: "42",
+      identifier: "GH-42",
+      title: "Controlled issue",
+      state: "In Progress",
+      labels: ["symphony"],
+      dispatchable: true
+    }
+
+    waiting_issue = %{
+      issue
+      | dispatchable: false,
+        native_ref: %{
+          "workflow_control" => %{
+            "state" => "awaiting_input",
+            "phase" => "clarify",
+            "trigger" => nil
+          }
+        }
+    }
+
+    fetcher = fn ["42"] -> {:ok, [waiting_issue]} end
+
+    assert {:done, ^waiting_issue} = AgentRunner.continue_with_issue_for_test(issue, fetcher)
+  end
+
   test "normal worker exit schedules active-state continuation retry" do
     issue_id = "issue-resume"
     ref = make_ref()

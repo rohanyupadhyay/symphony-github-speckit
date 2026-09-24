@@ -5,6 +5,7 @@ defmodule SymphonyElixir.GitHub.Client do
 
   require Logger
   alias SymphonyElixir.Config
+  alias SymphonyElixir.GitHub.WorkflowControl
   alias SymphonyElixir.Tracker.Issue
 
   @default_api_url "https://api.github.com"
@@ -56,6 +57,16 @@ defmodule SymphonyElixir.GitHub.Client do
   @spec normalize_issue_for_test(map(), String.t()) :: Issue.t() | nil
   def normalize_issue_for_test(issue, repo) when is_map(issue) and is_binary(repo) do
     normalize_issue(issue, repo)
+  end
+
+  @doc false
+  @spec enrich_issue_for_test(Issue.t(), map(), function()) ::
+          {:ok, Issue.t()} | {:error, term()}
+  def enrich_issue_for_test(%Issue{} = issue, tracker_settings, request_fun)
+      when is_map(tracker_settings) and is_function(request_fun, 5) do
+    with {:ok, github_settings} <- settings(tracker_settings) do
+      enrich_issue(issue, github_settings, request_fun)
+    end
   end
 
   @doc false
@@ -123,12 +134,15 @@ defmodule SymphonyElixir.GitHub.Client do
            ),
          true <- is_list(payload) or {:error, :github_unknown_payload} do
       issues = normalize_state_page(payload, settings.repo, requested_states)
-      updated_acc = [issues | acc]
 
-      if length(payload) < @page_size do
-        {:ok, updated_acc |> Enum.reverse() |> List.flatten()}
-      else
-        do_fetch_pages(settings, state_query, requested_states, page + 1, request_fun, updated_acc)
+      with {:ok, enriched_issues} <- enrich_issues(issues, settings, request_fun) do
+        updated_acc = [enriched_issues | acc]
+
+        if length(payload) < @page_size do
+          {:ok, updated_acc |> Enum.reverse() |> List.flatten()}
+        else
+          do_fetch_pages(settings, state_query, requested_states, page + 1, request_fun, updated_acc)
+        end
       end
     end
   end
@@ -157,8 +171,13 @@ defmodule SymphonyElixir.GitHub.Client do
 
   defp continue_issue_id_fetch(%{} = raw_issue, rest, settings, request_fun, acc) do
     case normalize_issue(raw_issue, settings.repo) do
-      %Issue{} = issue -> fetch_issue_ids(rest, settings, request_fun, [issue | acc])
-      nil -> {:error, :github_unknown_payload}
+      %Issue{} = issue ->
+        with {:ok, enriched_issue} <- enrich_issue(issue, settings, request_fun) do
+          fetch_issue_ids(rest, settings, request_fun, [enriched_issue | acc])
+        end
+
+      nil ->
+        {:error, :github_unknown_payload}
     end
   end
 
@@ -289,11 +308,27 @@ defmodule SymphonyElixir.GitHub.Client do
     token = resolve_setting(provider["token"], System.get_env("GITHUB_TOKEN"))
 
     cond do
-      not valid_api_url?(api_url) -> {:error, :invalid_github_api_url}
-      not present_string?(repo) -> {:error, :missing_github_repo}
-      not valid_repo?(repo) -> {:error, :invalid_github_repo}
-      not present_string?(token) -> {:error, :missing_github_token}
-      true -> {:ok, %{api_url: String.trim_trailing(api_url, "/"), repo: repo, token: token}}
+      not valid_api_url?(api_url) ->
+        {:error, :invalid_github_api_url}
+
+      not present_string?(repo) ->
+        {:error, :missing_github_repo}
+
+      not valid_repo?(repo) ->
+        {:error, :invalid_github_repo}
+
+      not present_string?(token) ->
+        {:error, :missing_github_token}
+
+      true ->
+        {:ok,
+         %{
+           api_url: String.trim_trailing(api_url, "/"),
+           repo: repo,
+           token: token,
+           provider: provider,
+           required_labels: Map.get(tracker_settings, :required_labels, [])
+         }}
     end
   end
 
@@ -381,6 +416,119 @@ defmodule SymphonyElixir.GitHub.Client do
   end
 
   defp parse_issue_number(_value), do: {:error, :invalid_github_issue_id}
+
+  defp enrich_issues(issues, settings, request_fun) do
+    Enum.reduce_while(issues, {:ok, []}, fn issue, {:ok, acc} ->
+      case enrich_issue(issue, settings, request_fun) do
+        {:ok, enriched} -> {:cont, {:ok, [enriched | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, enriched} -> {:ok, Enum.reverse(enriched)}
+      error -> error
+    end
+  end
+
+  defp enrich_issue(%Issue{} = issue, settings, request_fun) do
+    if WorkflowControl.enabled?(settings.provider) and workflow_candidate?(issue, settings.required_labels) do
+      with {:ok, comments} <- fetch_collection(issue_comments_path(settings, issue.id), settings, request_fun),
+           initial <-
+             WorkflowControl.derive(
+               comments,
+               %{},
+               WorkflowControl.authorized_associations(settings.provider)
+             ),
+           {:ok, review_context} <- maybe_fetch_review_context(initial.checkpoint, settings, request_fun) do
+        derived =
+          WorkflowControl.derive(
+            comments,
+            review_context,
+            WorkflowControl.authorized_associations(settings.provider)
+          )
+
+        control = %{
+          "state" => derived.checkpoint && derived.checkpoint["state"],
+          "phase" => derived.checkpoint && derived.checkpoint["phase"],
+          "checkpoint" => derived.checkpoint,
+          "trigger" => derived.trigger
+        }
+
+        native_ref = Map.put(issue.native_ref || %{}, "workflow_control", control)
+        {:ok, %{issue | native_ref: native_ref, dispatchable: derived.dispatchable}}
+      end
+    else
+      {:ok, issue}
+    end
+  end
+
+  defp workflow_candidate?(_issue, []), do: true
+
+  defp workflow_candidate?(%Issue{labels: labels}, required_labels) do
+    normalized = MapSet.new(labels, &normalize_label/1)
+    Enum.all?(required_labels, &MapSet.member?(normalized, normalize_label(&1)))
+  end
+
+  defp maybe_fetch_review_context(%{"state" => "awaiting_review", "pr_number" => pr_number}, settings, request_fun) do
+    fetch_review_context(pr_number, settings, request_fun)
+  end
+
+  defp maybe_fetch_review_context(_checkpoint, _settings, _request_fun), do: {:ok, %{}}
+
+  defp fetch_review_context(pr_number, settings, request_fun) do
+    with {:ok, pull_request} <-
+           request_with_settings(
+             "GET",
+             pull_request_path(settings, pr_number),
+             %{},
+             nil,
+             settings,
+             request_fun,
+             false
+           ),
+         true <- is_map(pull_request) or {:error, :github_unknown_payload},
+         {:ok, conversation_comments} <-
+           fetch_collection(issue_comments_path(settings, pr_number), settings, request_fun),
+         {:ok, review_comments} <-
+           fetch_collection(pull_request_path(settings, pr_number) <> "/comments", settings, request_fun),
+         {:ok, reviews} <-
+           fetch_collection(pull_request_path(settings, pr_number) <> "/reviews", settings, request_fun) do
+      {:ok,
+       %{
+         "pull_request" => pull_request,
+         "conversation_comments" => conversation_comments,
+         "review_comments" => review_comments,
+         "reviews" => reviews
+       }}
+    end
+  end
+
+  defp fetch_collection(path, settings, request_fun, page \\ 1, acc \\ []) do
+    params = %{"per_page" => @page_size, "page" => page}
+
+    with {:ok, payload} <-
+           request_with_settings("GET", path, params, nil, settings, request_fun, false),
+         true <- is_list(payload) or {:error, :github_unknown_payload} do
+      updated_acc = [payload | acc]
+
+      if length(payload) < @page_size do
+        {:ok, updated_acc |> Enum.reverse() |> List.flatten()}
+      else
+        fetch_collection(path, settings, request_fun, page + 1, updated_acc)
+      end
+    end
+  end
+
+  defp issue_comments_path(settings, issue_number),
+    do: "#{repository_issue_path(settings, issue_number)}/comments"
+
+  defp pull_request_path(settings, pr_number),
+    do: "/repos/#{encoded_repo(settings.repo)}/pulls/#{pr_number}"
+
+  defp normalize_label(label) when is_binary(label),
+    do: label |> String.trim() |> String.downcase()
+
+  defp normalize_label(_label), do: ""
 
   defp request_method("GET"), do: {:ok, :get}
   defp request_method("POST"), do: {:ok, :post}
