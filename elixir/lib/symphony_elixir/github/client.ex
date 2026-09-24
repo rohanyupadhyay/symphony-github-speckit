@@ -132,18 +132,38 @@ defmodule SymphonyElixir.GitHub.Client do
              request_fun,
              false
            ),
-         true <- is_list(payload) or {:error, :github_unknown_payload} do
-      issues = normalize_state_page(payload, settings.repo, requested_states)
+         true <- is_list(payload) or {:error, :github_unknown_payload},
+         issues = normalize_state_page(payload, settings.repo, requested_states),
+         {:ok, enriched_issues} <- enrich_issues(issues, settings, request_fun) do
+      continue_fetch_pages(
+        payload,
+        enriched_issues,
+        settings,
+        state_query,
+        requested_states,
+        page,
+        request_fun,
+        acc
+      )
+    end
+  end
 
-      with {:ok, enriched_issues} <- enrich_issues(issues, settings, request_fun) do
-        updated_acc = [enriched_issues | acc]
+  defp continue_fetch_pages(
+         payload,
+         enriched_issues,
+         settings,
+         state_query,
+         requested_states,
+         page,
+         request_fun,
+         acc
+       ) do
+    updated_acc = [enriched_issues | acc]
 
-        if length(payload) < @page_size do
-          {:ok, updated_acc |> Enum.reverse() |> List.flatten()}
-        else
-          do_fetch_pages(settings, state_query, requested_states, page + 1, request_fun, updated_acc)
-        end
-      end
+    if length(payload) < @page_size do
+      {:ok, updated_acc |> Enum.reverse() |> List.flatten()}
+    else
+      do_fetch_pages(settings, state_query, requested_states, page + 1, request_fun, updated_acc)
     end
   end
 

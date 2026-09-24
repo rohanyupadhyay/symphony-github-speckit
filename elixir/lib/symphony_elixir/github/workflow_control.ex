@@ -105,21 +105,35 @@ defmodule SymphonyElixir.GitHub.WorkflowControl do
       not present?(summary) ->
         {:error, :invalid_workflow_summary}
 
-      state == "awaiting_input" and not present?(checkpoint["prompt"]) ->
-        {:error, :missing_workflow_prompt}
-
-      state == "awaiting_approval" and checkpoint["gate"] not in @gates ->
-        {:error, :invalid_workflow_gate}
-
-      state == "awaiting_review" and not positive_integer?(checkpoint["pr_number"]) ->
-        {:error, :invalid_workflow_pr_number}
-
       true ->
-        :ok
+        validate_checkpoint_state(checkpoint)
     end
   end
 
   def valid_checkpoint(_checkpoint), do: {:error, :invalid_workflow_checkpoint}
+
+  defp validate_checkpoint_state(%{"state" => "awaiting_input", "prompt" => prompt}) do
+    if present?(prompt), do: :ok, else: {:error, :missing_workflow_prompt}
+  end
+
+  defp validate_checkpoint_state(%{"state" => "awaiting_approval", "gate" => gate}) do
+    if gate in @gates, do: :ok, else: {:error, :invalid_workflow_gate}
+  end
+
+  defp validate_checkpoint_state(%{"state" => "awaiting_review", "pr_number" => pr_number}) do
+    if positive_integer?(pr_number), do: :ok, else: {:error, :invalid_workflow_pr_number}
+  end
+
+  defp validate_checkpoint_state(%{"state" => "awaiting_input"}),
+    do: {:error, :missing_workflow_prompt}
+
+  defp validate_checkpoint_state(%{"state" => "awaiting_approval"}),
+    do: {:error, :invalid_workflow_gate}
+
+  defp validate_checkpoint_state(%{"state" => "awaiting_review"}),
+    do: {:error, :invalid_workflow_pr_number}
+
+  defp validate_checkpoint_state(_checkpoint), do: :ok
 
   @spec derive([map()], map(), [String.t()]) :: derived_state()
   def derive(comments, review_context, authorized_associations)
@@ -183,8 +197,7 @@ defmodule SymphonyElixir.GitHub.WorkflowControl do
   defp derive_trigger(checkpoint, checkpoint_comment, comments, review_context, authorized) do
     later_comments =
       comments
-      |> Enum.filter(&(event_id(&1) > event_id(checkpoint_comment)))
-      |> Enum.filter(&authorized?(&1, authorized))
+      |> Enum.filter(&(event_id(&1) > event_id(checkpoint_comment) and authorized?(&1, authorized)))
       |> Enum.reject(&marker_comment?/1)
       |> Enum.sort_by(&event_id/1)
 
@@ -273,8 +286,10 @@ defmodule SymphonyElixir.GitHub.WorkflowControl do
     actionable_reviews =
       context
       |> Map.get("reviews", [])
-      |> Enum.filter(&authorized?(&1, authorized))
-      |> Enum.filter(&(normalize_review_state(&1["state"]) in ["approved", "changes_requested"]))
+      |> Enum.filter(
+        &(authorized?(&1, authorized) and
+            normalize_review_state(&1["state"]) in ["approved", "changes_requested"])
+      )
 
     new_review? = Enum.any?(actionable_reviews, &(event_id(&1) > minimum_id))
 
