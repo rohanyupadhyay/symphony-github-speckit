@@ -271,7 +271,7 @@ defmodule SymphonyElixir.GitHub.WorkflowControl do
       end)
 
     (issue_comments ++ pr_comments)
-    |> Enum.sort_by(&event_id/1)
+    |> Enum.sort_by(&event_order/1)
     |> Enum.map(&command_event/1)
     |> Enum.reject(&is_nil/1)
     |> Enum.filter(&valid_command_for_checkpoint?(&1, checkpoint))
@@ -365,6 +365,11 @@ defmodule SymphonyElixir.GitHub.WorkflowControl do
       value when is_integer(value) -> value
       _ -> 0
     end
+  end
+
+  defp event_order(event) do
+    created_at = if is_binary(event["created_at"]), do: event["created_at"], else: ""
+    {created_at, event_id(event)}
   end
 
   defp normalize_review_state(value) when is_binary(value),

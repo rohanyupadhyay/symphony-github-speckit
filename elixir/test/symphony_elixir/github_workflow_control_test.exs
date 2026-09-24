@@ -311,6 +311,27 @@ defmodule SymphonyElixir.GitHub.WorkflowControlTest do
     refute WorkflowControl.derive([checkpoint], invalid_command_context, @authorized).dispatchable
   end
 
+  test "review commands are ordered by creation time across GitHub event collections" do
+    checkpoint = checkpoint_comment(70, "awaiting_review", %{"pr_number" => 11})
+
+    older_inline =
+      comment(900, "OWNER", "/symphony cancel")
+      |> Map.delete("created_at")
+
+    newer_conversation =
+      comment(100, "OWNER", "/symphony status")
+      |> Map.put("created_at", "2026-09-24T02:00:00Z")
+
+    context = %{
+      "pull_request" => %{"number" => 11, "state" => "open", "merged" => false},
+      "conversation_comments" => [newer_conversation],
+      "review_comments" => [older_inline]
+    }
+
+    assert %{trigger: %{"command" => "status"}} =
+             WorkflowControl.derive([checkpoint], context, @authorized)
+  end
+
   defp checkpoint_comment(id, state, extra) do
     checkpoint =
       Map.merge(
