@@ -34,6 +34,10 @@ help with the setup:
 > Set up Symphony for my repository based on
 > https://github.com/openai/symphony/blob/main/elixir/README.md
 
+This fork also provides optional, durable GitHub comment-driven workflow control for repositories
+that want human approval gates or Spec Kit phases. See
+[GitHub workflow control](elixir/docs/github-workflow-control.md).
+
 ---
 
 ## License

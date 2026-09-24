@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+symphony_executable="${SYMPHONY_EXECUTABLE:-${script_dir}/../bin/symphony}"
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "GitHub CLI is required. Install it and run 'gh auth login'." >&2
+  exit 1
+fi
+
+if [[ ! -x "${symphony_executable}" ]]; then
+  echo "Symphony executable not found or not executable: ${symphony_executable}" >&2
+  echo "Build Symphony before using this launcher." >&2
+  exit 1
+fi
+
+github_token="$(gh auth token 2>/dev/null)"
+
+if [[ -z "${github_token}" ]]; then
+  echo "GitHub CLI is not authenticated. Run 'gh auth login'." >&2
+  exit 1
+fi
+
+GITHUB_TOKEN="${github_token}" exec "${symphony_executable}" "$@"

@@ -261,6 +261,11 @@ codex:
   `body`; Symphony executes it host-side with the session-bound token, removes configured tracker
   credentials and provider authentication aliases from the Codex child, and leaves raw tool access
   limited by that token's GitHub permissions.
+- Optional workflow control: `tracker.provider.workflow_control.enabled: true` makes versioned
+  issue comments a restart-safe pause/resume mechanism. The `github_workflow_checkpoint` tool
+  posts checkpoints for the current issue, and only configured GitHub author associations can
+  supply answers or commands. See [the workflow-control guide](docs/github-workflow-control.md)
+  and the [reusable Spec Kit template](examples/github-speckit-WORKFLOW.md).
 
 ### Jira Cloud adapter
 
