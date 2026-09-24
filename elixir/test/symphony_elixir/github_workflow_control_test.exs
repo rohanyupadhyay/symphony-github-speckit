@@ -121,6 +121,13 @@ defmodule SymphonyElixir.GitHub.WorkflowControlTest do
                %{},
                @authorized
              )
+
+    malformed_id_checkpoint =
+      checkpoint_comment(2, "blocked", %{})
+      |> Map.put("id", "not-an-integer")
+
+    assert %{checkpoint: %{"state" => "blocked"}, dispatchable: false} =
+             WorkflowControl.derive([malformed_id_checkpoint], %{}, @authorized)
   end
 
   test "awaiting input resumes only for a later authorized non-marker comment" do
