@@ -36,6 +36,27 @@ defmodule SymphonyElixir.GitHub.WorkflowControlTest do
     assert WorkflowControl.authorized_associations(%{
              "workflow_control" => %{"enabled" => true}
            }) == @authorized
+
+    assert {:error, :invalid_github_workflow_control} = WorkflowControl.validate_settings(nil)
+    refute WorkflowControl.enabled?(nil)
+    assert WorkflowControl.authorized_associations(nil) == @authorized
+
+    assert {:error, :invalid_github_workflow_control} =
+             WorkflowControl.validate_settings(%{"workflow_control" => %{"enabled" => "yes"}})
+
+    assert {:error, :invalid_github_workflow_associations} =
+             WorkflowControl.validate_settings(%{
+               "workflow_control" => %{"authorized_associations" => []}
+             })
+
+    assert {:error, :invalid_github_workflow_associations} =
+             WorkflowControl.validate_settings(%{
+               "workflow_control" => %{"authorized_associations" => "OWNER"}
+             })
+
+    assert WorkflowControl.authorized_associations(%{
+             "workflow_control" => %{"authorized_associations" => [" owner ", 7]}
+           }) == ["OWNER", ""]
   end
 
   test "renders and decodes a versioned checkpoint without exposing marker data as prose" do
@@ -56,6 +77,50 @@ defmodule SymphonyElixir.GitHub.WorkflowControlTest do
     assert {:ok, decoded} = WorkflowControl.decode_checkpoint(body)
     assert decoded == Map.put(checkpoint, "version", 1)
     assert :error = WorkflowControl.decode_checkpoint(body <> "\n<!-- symphony-control:v1:not-base64 -->")
+    assert :error = WorkflowControl.decode_checkpoint(nil)
+
+    for invalid <- [
+          nil,
+          %{},
+          %{"state" => "unknown", "phase" => "x", "summary" => "x"},
+          %{"state" => "blocked", "phase" => "", "summary" => "x"},
+          %{"state" => "blocked", "phase" => "x", "summary" => ""},
+          %{"state" => "awaiting_input", "phase" => "x", "summary" => "x"},
+          %{"state" => "awaiting_input", "phase" => "x", "summary" => "x", "prompt" => ""},
+          %{"state" => "awaiting_approval", "phase" => "x", "summary" => "x"},
+          %{"state" => "awaiting_approval", "phase" => "x", "summary" => "x", "gate" => "x"},
+          %{"state" => "awaiting_review", "phase" => "x", "summary" => "x"},
+          %{"state" => "awaiting_review", "phase" => "x", "summary" => "x", "pr_number" => 0}
+        ] do
+      assert {:error, _reason} = WorkflowControl.valid_checkpoint(invalid)
+    end
+
+    assert WorkflowControl.render_comment(%{
+             "state" => "awaiting_review",
+             "phase" => "review",
+             "summary" => "Review it.",
+             "pr_number" => 2
+           }) =~ "pull-request review"
+
+    assert WorkflowControl.render_comment(%{
+             "state" => "blocked",
+             "phase" => "push",
+             "summary" => "Blocked."
+           }) =~ "/symphony retry"
+
+    assert WorkflowControl.render_comment(%{"phase" => "other"}) =~ "Symphony is waiting."
+  end
+
+  test "derives an initially dispatchable issue and ignores malformed event fields" do
+    assert %{checkpoint: nil, trigger: nil, dispatchable: true} =
+             WorkflowControl.derive(
+               [
+                 %{"id" => "bad", "author_association" => "OWNER", "body" => nil},
+                 %{"id" => 1, "author_association" => 7, "body" => nil}
+               ],
+               %{},
+               @authorized
+             )
   end
 
   test "awaiting input resumes only for a later authorized non-marker comment" do
@@ -144,6 +209,13 @@ defmodule SymphonyElixir.GitHub.WorkflowControlTest do
                %{},
                @authorized
              )
+
+    assert %{dispatchable: true, trigger: %{"command" => "revise", "scope" => "plan"}} =
+             WorkflowControl.derive(
+               [checkpoint, comment(34, "OWNER", "/symphony revise plan")],
+               %{},
+               @authorized
+             )
   end
 
   test "review state prioritizes unresolved change requests and ignores general PR comments" do
@@ -222,6 +294,14 @@ defmodule SymphonyElixir.GitHub.WorkflowControlTest do
                %{"pull_request" => %{"number" => 9, "state" => "closed", "merged" => false}},
                @authorized
              )
+
+    invalid_command_context = %{
+      "pull_request" => %{"number" => 9, "state" => "open", "merged" => false},
+      "review_comments" => [comment(61, "OWNER", "/symphony approve plan")],
+      "reviews" => [review(62, "nobody", "OWNER", nil)]
+    }
+
+    refute WorkflowControl.derive([checkpoint], invalid_command_context, @authorized).dispatchable
   end
 
   defp checkpoint_comment(id, state, extra) do

@@ -242,8 +242,6 @@ defmodule SymphonyElixir.GitHub.WorkflowControl do
     end
   end
 
-  defp valid_command_for_checkpoint?(_command, _checkpoint), do: false
-
   defp review_trigger(checkpoint, issue_comments, context, authorized) do
     pull_request = Map.get(context, "pull_request", %{})
 
@@ -392,8 +390,6 @@ defmodule SymphonyElixir.GitHub.WorkflowControl do
       normalized -> normalized
     end
   end
-
-  defp normalize_text(_value), do: nil
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

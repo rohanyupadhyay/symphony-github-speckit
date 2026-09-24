@@ -631,6 +631,115 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
            }
   end
 
+  test "github_workflow_checkpoint rejects malformed inputs and failed API responses" do
+    issue = %Issue{id: "42", native_ref: %{"number" => 42, "repo" => "octo/repo"}}
+    settings = workflow_tracker_settings()
+
+    for {arguments, opts} <- [
+          {nil, [issue: issue, tracker_settings: settings]},
+          {%{"state" => "blocked", "phase" => "x", "summary" => "x"}, [issue: %Issue{id: "42", native_ref: %{}}, tracker_settings: settings]},
+          {%{
+             "state" => "awaiting_approval",
+             "phase" => "plan",
+             "summary" => "Ready.",
+             "gate" => "plan"
+           }, [issue: issue, tracker_settings: settings]}
+        ] do
+      refute GitHubAgentTool.execute(
+               "github_workflow_checkpoint",
+               arguments,
+               Keyword.put(opts, :github_client, fn _, _, _, _, _ ->
+                 flunk("invalid input must not call GitHub")
+               end)
+             )["success"]
+    end
+
+    approval = %{
+      "state" => "awaiting_approval",
+      "phase" => "plan",
+      "summary" => "Ready.",
+      "gate" => "plan",
+      "branch" => "topic",
+      "head_sha" => String.duplicate("a", 40)
+    }
+
+    for response <- [
+          {:ok, %{status: 404, body: %{}}},
+          {:ok, %{status: 200, body: %{"sha" => String.duplicate("b", 40)}}},
+          {:error, :network}
+        ] do
+      result =
+        GitHubAgentTool.execute(
+          "github_workflow_checkpoint",
+          approval,
+          issue: issue,
+          tracker_settings: settings,
+          github_client: fn _, _, _, _, _ -> response end
+        )
+
+      refute result["success"]
+    end
+  end
+
+  test "github_workflow_checkpoint paginates cursor events and reports cursor failures" do
+    issue = %Issue{id: "42", native_ref: %{"number" => 42, "repo" => "octo/repo"}}
+
+    arguments = %{
+      "state" => "awaiting_review",
+      "phase" => "review",
+      "summary" => "Review.",
+      "pr_number" => 7
+    }
+
+    response =
+      GitHubAgentTool.execute(
+        "github_workflow_checkpoint",
+        arguments,
+        issue: issue,
+        tracker_settings: workflow_tracker_settings(),
+        github_client: fn method, path, params, _body, _opts ->
+          body =
+            cond do
+              method == "POST" ->
+                %{"id" => 500}
+
+              path =~ "/issues/7/comments" and params["page"] == 1 ->
+                [%{"id" => "bad"} | Enum.map(2..100, &%{"id" => &1})]
+
+              true ->
+                []
+            end
+
+          {:ok, %{status: if(method == "POST", do: 201, else: 200), body: body}}
+        end
+      )
+
+    assert response["success"]
+
+    failed =
+      GitHubAgentTool.execute(
+        "github_workflow_checkpoint",
+        arguments,
+        issue: issue,
+        tracker_settings: workflow_tracker_settings(),
+        github_client: fn _, _, _, _, _ -> {:ok, %{status: 500, body: %{}}} end
+      )
+
+    refute failed["success"]
+    assert Jason.decode!(failed["output"])["error"]["reason"] =~ "github_review_cursor_failed"
+
+    post_failed =
+      GitHubAgentTool.execute(
+        "github_workflow_checkpoint",
+        %{"state" => "blocked", "phase" => "push", "summary" => "Blocked."},
+        issue: issue,
+        tracker_settings: workflow_tracker_settings(),
+        github_client: fn _, _, _, _, _ -> {:ok, %{status: 500, body: %{}}} end
+      )
+
+    refute post_failed["success"]
+  end
+
   defp tracker_settings(provider_overrides \\ %{}) do
     %{
       kind: "github",
