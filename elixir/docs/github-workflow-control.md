@@ -34,7 +34,8 @@ gh auth login
 ```
 
 The launcher obtains the current `gh` token, provides it only to the Symphony host process, and
-does not print it. Symphony removes GitHub token variables from the Codex child environment.
+does not print it. It also supplies Symphony's required engineering-preview acknowledgment flag.
+Symphony removes GitHub token variables from the Codex child environment.
 
 ## Checkpoints and commands
 

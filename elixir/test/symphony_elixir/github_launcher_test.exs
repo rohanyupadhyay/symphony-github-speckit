@@ -38,6 +38,8 @@ defmodule SymphonyElixir.GitHubLauncherTest do
 
     assert status == 0
     refute stdout =~ "test-secret-token"
-    assert File.read!(output_path) == "test-secret-token\n/tmp/WORKFLOW.md --port 4000\n"
+
+    assert File.read!(output_path) ==
+             "test-secret-token\n--i-understand-that-this-will-be-running-without-the-usual-guardrails /tmp/WORKFLOW.md --port 4000\n"
   end
 end

@@ -22,4 +22,5 @@ if [[ -z "${github_token}" ]]; then
   exit 1
 fi
 
-GITHUB_TOKEN="${github_token}" exec "${symphony_executable}" "$@"
+GITHUB_TOKEN="${github_token}" exec "${symphony_executable}" \
+  --i-understand-that-this-will-be-running-without-the-usual-guardrails "$@"
