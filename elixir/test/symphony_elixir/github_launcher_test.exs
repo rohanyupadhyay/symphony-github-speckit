@@ -1,6 +1,19 @@
 defmodule SymphonyElixir.GitHubLauncherTest do
   use ExUnit.Case, async: true
 
+  alias SymphonyElixir.Workflow
+
+  test "GitHub Spec Kit template permits Git metadata writes in isolated workspaces" do
+    template = Path.expand("../../examples/github-speckit-WORKFLOW.md", __DIR__)
+
+    assert {:ok, workflow} = Workflow.load(template)
+    assert get_in(workflow.config, ["codex", "thread_sandbox"]) == "danger-full-access"
+
+    assert get_in(workflow.config, ["codex", "turn_sandbox_policy"]) == %{
+             "type" => "dangerFullAccess"
+           }
+  end
+
   test "launcher supplies the gh token to Symphony without printing it" do
     temp_root =
       Path.join(System.tmp_dir!(), "symphony-github-launcher-#{System.unique_integer([:positive])}")

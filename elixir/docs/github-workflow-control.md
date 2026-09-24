@@ -37,6 +37,12 @@ The launcher obtains the current `gh` token, provides it only to the Symphony ho
 does not print it. It also supplies Symphony's required engineering-preview acknowledgment flag.
 Symphony removes GitHub token variables from the Codex child environment.
 
+The reusable Spec Kit workflow template uses `danger-full-access` for its Codex thread and turns.
+This is required because Codex's `workspace-write` sandbox intentionally makes `.git` read-only,
+while this workflow must create branches, commit artifacts, and push them. Keep `workspace.root`
+pointed at a dedicated Symphony workspace tree; never point it at a developer checkout. The setting
+applies to Symphony's issue agents, not to unrelated Codex sessions.
+
 ## Checkpoints and commands
 
 Agents call `github_workflow_checkpoint` with a state, phase, and readable summary. Conditional

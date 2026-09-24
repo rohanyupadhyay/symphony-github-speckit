@@ -24,10 +24,11 @@ agent:
 codex:
   command: codex app-server
   approval_policy: never
-  thread_sandbox: workspace-write
+  # The agent must create branches and commits. Codex's workspace-write sandbox
+  # intentionally makes .git read-only, so use this only with isolated workspaces.
+  thread_sandbox: danger-full-access
   turn_sandbox_policy:
-    type: workspaceWrite
-    networkAccess: true
+    type: dangerFullAccess
 ---
 
 You are advancing GitHub issue `{{ issue.identifier }}` through one durable Spec Kit workflow.
