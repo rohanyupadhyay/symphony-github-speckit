@@ -1,7 +1,9 @@
-# Symphony
+# Symphony Plus
 
-Symphony turns project work into isolated, autonomous implementation runs, allowing teams to manage
-work instead of supervising coding agents.
+Symphony Plus extends [OpenAI Symphony](https://github.com/openai/symphony) with optional, durable
+GitHub comment-driven workflow control and support for orchestrating repository-local Spec Kit
+phases. It retains Symphony's isolated, autonomous implementation model so teams can manage work
+instead of supervising coding agents.
 
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](https://player.vimeo.com/video/1186371009?h=5626e4b899)
 
@@ -34,9 +36,8 @@ help with the setup:
 > Set up Symphony for my repository based on
 > https://github.com/openai/symphony/blob/main/elixir/README.md
 
-This fork also provides optional, durable GitHub comment-driven workflow control for repositories
-that want human approval gates or Spec Kit phases. See
-[GitHub workflow control](elixir/docs/github-workflow-control.md).
+See [GitHub workflow control](elixir/docs/github-workflow-control.md) for the Symphony Plus
+extensions and the reusable workflow template.
 
 ---
 
