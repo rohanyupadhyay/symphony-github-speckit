@@ -65,8 +65,8 @@ mise exec -- elixir --version
 ## Run
 
 ```bash
-git clone https://github.com/openai/symphony
-cd symphony/elixir
+git clone https://github.com/rohanyupadhyay/symphony-plus
+cd symphony-plus/elixir
 mise trust
 mise install
 mise exec -- mix setup

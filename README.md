@@ -33,8 +33,8 @@ Check out [elixir/README.md](elixir/README.md) for instructions on how to set up
 and run the Elixir-based Symphony implementation. You can also ask your favorite coding agent to
 help with the setup:
 
-> Set up Symphony for my repository based on
-> https://github.com/openai/symphony/blob/main/elixir/README.md
+> Set up Symphony Plus for my repository based on
+> https://github.com/rohanyupadhyay/symphony-plus/blob/main/elixir/README.md
 
 See [GitHub workflow control](elixir/docs/github-workflow-control.md) for the Symphony Plus
 extensions and the reusable workflow template.
