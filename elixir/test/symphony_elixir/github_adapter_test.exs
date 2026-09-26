@@ -112,6 +112,16 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
 
     refute failed["success"]
     refute failed["output"] =~ "short-lived-secret"
+
+    malformed =
+      GitHubAgentTool.execute(
+        "github_git_push",
+        %{},
+        git_push: fn _arguments, _opts -> :unexpected end
+      )
+
+    refute malformed["success"]
+    assert Jason.decode!(malformed["output"])["error"]["reason"] =~ "github_push_failed"
   end
 
   test "client validates repository settings and declares token environments" do
@@ -443,6 +453,9 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
            ]
 
     assert :ok = Config.validate!()
+    issue = %Issue{id: "42", identifier: "GH-42", title: "Test", state: "open"}
+    assert :ok = GitHubAdapter.prepare_workspace("/tmp/not-used", issue, "worker.example")
+    assert :ok = SymphonyElixir.Tracker.prepare_workspace("/tmp/not-used", issue, nil)
   end
 
   test "workflow control enriches a labeled issue and reconstructs an authorized answer" do

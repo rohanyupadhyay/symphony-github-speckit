@@ -98,7 +98,8 @@ defmodule SymphonyElixir.GitHub.AppProfile do
     end
   end
 
-  @spec verify(profile(), String.t()) :: {:ok, %{id: pos_integer(), login: String.t(), slug: String.t()}} | {:error, term()}
+  @spec verify(profile(), String.t()) ::
+          {:ok, %{id: pos_integer(), login: String.t(), slug: String.t()}} | {:error, term()}
   def verify(profile, repository) do
     :ok = ensure_auth_cache()
 
@@ -121,12 +122,10 @@ defmodule SymphonyElixir.GitHub.AppProfile do
          {:ok, identity} <- Auth.identity(auth),
          {:ok, %{status: status}} <-
            Client.request("GET", "/repos/#{encoded_repo(repository)}", %{}, nil, tracker_settings: tracker_settings),
-         true <- status in 200..299 do
+         :ok <- validate_repository_status(status) do
       {:ok, identity}
     else
-      {:ok, %{status: status}} -> {:error, {:github_app_repository_status, status}}
       {:error, _reason} = error -> error
-      _ -> {:error, :github_app_verification_failed}
     end
   end
 
@@ -245,6 +244,11 @@ defmodule SymphonyElixir.GitHub.AppProfile do
   end
 
   defp validate_source_key(_path), do: {:error, :invalid_github_app_private_key_path}
+
+  defp validate_repository_status(status) when status in 200..299, do: :ok
+
+  defp validate_repository_status(status) when is_integer(status),
+    do: {:error, {:github_app_repository_status, status}}
 
   defp encoded_repo(repository) do
     repository

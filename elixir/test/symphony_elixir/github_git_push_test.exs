@@ -52,9 +52,7 @@ defmodule SymphonyElixir.GitHub.GitPushTest do
     end
 
     assert :ok =
-             GitPush.prepare_workspace(context.workspace, context.settings,
-               identity_fun: identity_fun
-             )
+             GitPush.prepare_workspace(context.workspace, context.settings, identity_fun: identity_fun)
 
     assert git!(context.workspace, ["config", "user.name"]) == "verity-symphony[bot]"
 

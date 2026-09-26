@@ -80,26 +80,15 @@ defmodule SymphonyElixir.GitHub.Auth do
     end)
   end
 
-  @spec identity(app_config(), keyword()) :: {:ok, %{id: pos_integer(), login: String.t(), slug: String.t()}} | {:error, term()}
+  @spec identity(app_config(), keyword()) ::
+          {:ok, %{id: pos_integer(), login: String.t(), slug: String.t()}} | {:error, term()}
   def identity(%{kind: :github_app} = auth, opts \\ []) do
     now = now_datetime(opts)
     request_fun = Keyword.get(opts, :request_fun, &perform_request/5)
 
     with {:ok, installation_token} <- token(auth, opts) do
       AuthCache.fetch(identity_cache_key(auth), DateTime.to_unix(now), fn ->
-        with {:ok, jwt} <- app_jwt(auth, now: DateTime.to_unix(now)),
-             {:ok, %{status: 200, body: %{"slug" => slug}}} <-
-               request_fun.("GET", "/app", headers(jwt), nil, auth.api_url),
-             login = slug <> "[bot]",
-             encoded_login = URI.encode(login, &URI.char_unreserved?/1),
-             {:ok, %{status: 200, body: %{"id" => id, "login" => ^login, "type" => "Bot"}}} <-
-               request_fun.("GET", "/users/#{encoded_login}", headers(installation_token), nil, auth.api_url),
-             true <- is_integer(id) and id > 0 do
-          {:ok, %{id: id, login: login, slug: slug}, DateTime.to_unix(now) + 86_400}
-        else
-          {:error, _reason} = error -> error
-          _ -> {:error, :invalid_github_app_identity}
-        end
+        fetch_identity(auth, installation_token, request_fun, now)
       end)
     end
   end
@@ -255,6 +244,28 @@ defmodule SymphonyElixir.GitHub.Auth do
       {:ok, %{status: status}} -> {:error, {:github_app_token_status, status}}
       {:error, _reason} = error -> error
       _ -> {:error, :invalid_github_app_token_response}
+    end
+  end
+
+  defp fetch_identity(auth, installation_token, request_fun, now) do
+    with {:ok, jwt} <- app_jwt(auth, now: DateTime.to_unix(now)),
+         {:ok, %{status: 200, body: %{"slug" => slug}}} <-
+           request_fun.("GET", "/app", headers(jwt), nil, auth.api_url),
+         login = slug <> "[bot]",
+         encoded_login = URI.encode(login, &URI.char_unreserved?/1),
+         {:ok, %{status: 200, body: %{"id" => id, "login" => ^login, "type" => "Bot"}}} <-
+           request_fun.(
+             "GET",
+             "/users/#{encoded_login}",
+             headers(installation_token),
+             nil,
+             auth.api_url
+           ),
+         true <- is_integer(id) and id > 0 do
+      {:ok, %{id: id, login: login, slug: slug}, DateTime.to_unix(now) + 86_400}
+    else
+      {:error, _reason} = error -> error
+      _ -> {:error, :invalid_github_app_identity}
     end
   end
 

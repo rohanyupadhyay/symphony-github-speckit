@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.GitHub.AuthTest do
   use ExUnit.Case, async: false
 
-  alias SymphonyElixir.GitHub.{Auth, Client}
+  alias SymphonyElixir.GitHub.{Auth, Client, WorkflowControl}
 
   setup do
     temp_root = Path.join(System.tmp_dir!(), "symphony-github-auth-#{System.unique_integer([:positive])}")
@@ -236,7 +236,7 @@ defmodule SymphonyElixir.GitHub.AuthTest do
       )
 
     checkpoint_body =
-      SymphonyElixir.GitHub.WorkflowControl.render_comment(%{
+      WorkflowControl.render_comment(%{
         "state" => "blocked",
         "phase" => "setup",
         "summary" => "Waiting"

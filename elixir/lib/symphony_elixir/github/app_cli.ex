@@ -76,20 +76,28 @@ defmodule SymphonyElixir.GitHub.AppCLI do
   defp environment(args, deps) do
     case OptionParser.parse(args, strict: [profile: :string]) do
       {opts, [], []} ->
-        profile_name = Keyword.get(opts, :profile, "default")
-
-        with {:ok, values} <- deps.environment.(profile_name),
-             true <- Enum.all?(values, fn {name, value} -> safe_env?(name, value) end) do
-          Enum.each(values, fn {name, value} -> deps.puts.("#{name}=#{value}") end)
-          :ok
-        else
-          false -> {:error, :invalid_github_app_profile_environment}
-          {:error, _reason} = error -> error
-        end
+        export_profile_environment(opts, deps)
 
       _ ->
         {:error, usage_message()}
     end
+  end
+
+  defp export_profile_environment(opts, deps) do
+    profile_name = Keyword.get(opts, :profile, "default")
+
+    with {:ok, values} <- deps.environment.(profile_name),
+         true <- Enum.all?(values, fn {name, value} -> safe_env?(name, value) end) do
+      emit_environment(values, deps)
+    else
+      false -> {:error, :invalid_github_app_profile_environment}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp emit_environment(values, deps) do
+    Enum.each(values, fn {name, value} -> deps.puts.("#{name}=#{value}") end)
+    :ok
   end
 
   defp prompt_positive_id(deps, prompt, error) do
