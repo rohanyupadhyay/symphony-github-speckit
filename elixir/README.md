@@ -22,7 +22,8 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 5. Keeps Codex working on the issue until the work is done
 
 During app-server sessions, the selected tracker adapter may advertise provider-native tools. The
-Linear serves `linear_graphql`, GitHub Issues serves `github_api`, Jira Cloud serves
+Linear serves `linear_graphql`, GitHub Issues serves `github_api` and, for local GitHub App
+workspaces, `github_git_push`, Jira Cloud serves
 `jira_rest`, Asana serves `asana_api`, and GitLab serves `gitlab_api`. Symphony executes those
 tools with configured host-side auth and removes declared tracker-token environment variables from
 the Codex child, so the agent does not need a second tracker login.
@@ -254,21 +255,38 @@ codex:
 ### GitHub Issues adapter
 
 - Config: use `tracker.kind: github` with required `tracker.provider.repo` in `owner/repo` form,
-  optional `token` (defaults to `GITHUB_TOKEN` and accepts `$VAR`), and optional `api_url`
-  (default `https://api.github.com`, HTTPS only). Set explicit `active_states` and
-  `terminal_states`; active entries may be `open` and terminal entries may be `closed`.
+  App-first `tracker.provider.auth` containing `kind: github_app`, `app_id`, `installation_id`, and
+  `private_key_path`, and optional `api_url` (default `https://api.github.com`, HTTPS only).
+  Legacy `token` remains supported, defaults to `GITHUB_TOKEN`, and accepts `$VAR`. Set explicit
+  `active_states` and `terminal_states`; active entries may be `open` and terminal entries may be
+  `closed`.
 - Reads and identity: polling is scoped to the configured repository; `issue.id` is the
   repository issue number, `issue.identifier` is `GH-<number>`, hidden or deleted `404` issues are
   omitted on refresh, and pull requests returned by the Issues API are not dispatchable.
 - Tool and auth: `github_api` accepts a relative REST `path` plus optional `params` and JSON
-  `body`; Symphony executes it host-side with the session-bound token, removes configured tracker
-  credentials and provider authentication aliases from the Codex child, and leaves raw tool access
-  limited by that token's GitHub permissions.
+  `body`; Symphony executes it host-side with the session-bound token. `github_git_push` accepts
+  only the current issue branch and exact local head SHA, rejects dirty/mismatched workspaces, and
+  uses a short-lived installation token without placing it in the Codex environment or tool
+  response. App-authenticated Git pushes are initially local-workspace only. Symphony removes all
+  configured GitHub credential variables from the Codex child.
 - Optional workflow control: `tracker.provider.workflow_control.enabled: true` makes versioned
   issue comments a restart-safe pause/resume mechanism. The `github_workflow_checkpoint` tool
   posts checkpoints for the current issue, and only configured GitHub author associations can
   supply answers or commands. See [the workflow-control guide](docs/github-workflow-control.md)
   and the [reusable Spec Kit template](examples/github-speckit-WORKFLOW.md).
+
+Create and verify an operator-owned GitHub App profile, then start an App-authenticated workflow:
+
+```bash
+./bin/symphony github-app setup owner/repository --profile default
+./bin/symphony github-app verify owner/repository --profile default
+./scripts/run-github --app-profile default /absolute/path/to/WORKFLOW.md --port 4000
+```
+
+The profile lives under `${XDG_CONFIG_HOME:-~/.config}/symphony-plus/github-apps/<profile>` with a
+private `profile.json` and `private-key.pem`. One profile may be reused for repositories covered by
+the same GitHub App installation. See the workflow-control guide for permissions, rotation, and
+PAT fallback.
 
 ### Jira Cloud adapter
 

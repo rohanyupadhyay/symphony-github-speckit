@@ -136,4 +136,18 @@ defmodule SymphonyElixir.CLITest do
 
     assert :ok = CLI.evaluate([@ack_flag, "WORKFLOW.md"], deps)
   end
+
+  test "dispatches GitHub App commands without the runtime acknowledgement" do
+    parent = self()
+
+    deps = %{
+      github_app_command: fn args ->
+        send(parent, {:github_app_command, args})
+        :ok
+      end
+    }
+
+    assert :command_ok = CLI.evaluate(["github-app", "verify", "octo/repo"], deps)
+    assert_received {:github_app_command, ["verify", "octo/repo"]}
+  end
 end

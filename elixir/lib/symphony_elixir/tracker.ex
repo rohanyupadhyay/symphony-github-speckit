@@ -23,11 +23,13 @@ defmodule SymphonyElixir.Tracker do
   @callback fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   @callback agent_tool_specs() :: [map()]
   @callback execute_agent_tool(String.t(), term(), keyword()) :: map()
+  @callback prepare_workspace(Path.t(), Issue.t(), String.t() | nil) :: :ok | {:error, term()}
   @callback secret_environment_names(map()) :: [String.t()]
   @callback validate_config(map()) :: :ok | {:error, term()}
 
   @optional_callbacks agent_tool_specs: 0,
                       execute_agent_tool: 3,
+                      prepare_workspace: 3,
                       validate_config: 1
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
@@ -38,6 +40,18 @@ defmodule SymphonyElixir.Tracker do
   @spec fetch_issues_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_ids(issue_ids) do
     adapter().fetch_issues_by_ids(issue_ids)
+  end
+
+  @spec prepare_workspace(Path.t(), Issue.t(), String.t() | nil) :: :ok | {:error, term()}
+  def prepare_workspace(workspace, %Issue{} = issue, worker_host) when is_binary(workspace) do
+    selected_adapter = adapter()
+
+    if Code.ensure_loaded?(selected_adapter) and
+         function_exported?(selected_adapter, :prepare_workspace, 3) do
+      selected_adapter.prepare_workspace(workspace, issue, worker_host)
+    else
+      :ok
+    end
   end
 
   @doc """

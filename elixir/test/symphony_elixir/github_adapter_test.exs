@@ -68,7 +68,8 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
 
     assert Enum.map(GitHubAdapter.agent_tool_specs(), & &1["name"]) == [
              "github_api",
-             "github_workflow_checkpoint"
+             "github_workflow_checkpoint",
+             "github_git_push"
            ]
 
     assert GitHubAdapter.execute_agent_tool(
@@ -78,6 +79,49 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
                {:ok, %{status: 200, body: %{"login" => "octocat"}}}
              end
            )["success"]
+  end
+
+  test "github_git_push returns only validated branch metadata" do
+    head_sha = String.duplicate("a", 40)
+
+    response =
+      GitHubAgentTool.execute(
+        "github_git_push",
+        %{"branch" => "symphony/gh-42-auth", "head_sha" => head_sha},
+        git_push: fn arguments, opts ->
+          assert arguments == %{"branch" => "symphony/gh-42-auth", "head_sha" => head_sha}
+          assert opts[:workspace] == "/tmp/GH-42"
+          {:ok, %{branch: arguments["branch"], head_sha: arguments["head_sha"]}}
+        end,
+        workspace: "/tmp/GH-42"
+      )
+
+    assert response["success"]
+
+    assert Jason.decode!(response["output"]) == %{
+             "branch" => "symphony/gh-42-auth",
+             "head_sha" => head_sha
+           }
+
+    failed =
+      GitHubAgentTool.execute(
+        "github_git_push",
+        %{},
+        git_push: fn _arguments, _opts -> {:error, :invalid_github_push_arguments} end
+      )
+
+    refute failed["success"]
+    refute failed["output"] =~ "short-lived-secret"
+
+    malformed =
+      GitHubAgentTool.execute(
+        "github_git_push",
+        %{},
+        git_push: fn _arguments, _opts -> :unexpected end
+      )
+
+    refute malformed["success"]
+    assert Jason.decode!(malformed["output"])["error"]["reason"] =~ "github_push_failed"
   end
 
   test "client validates repository settings and declares token environments" do
@@ -312,7 +356,8 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
 
     assert Jason.decode!(unsupported["output"])["error"]["supportedTools"] == [
              "github_api",
-             "github_workflow_checkpoint"
+             "github_workflow_checkpoint",
+             "github_git_push"
            ]
 
     Enum.each(
@@ -403,10 +448,14 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
 
     assert Enum.map(binding.tool_specs, & &1["name"]) == [
              "github_api",
-             "github_workflow_checkpoint"
+             "github_workflow_checkpoint",
+             "github_git_push"
            ]
 
     assert :ok = Config.validate!()
+    issue = %Issue{id: "42", identifier: "GH-42", title: "Test", state: "open"}
+    assert :ok = GitHubAdapter.prepare_workspace("/tmp/not-used", issue, "worker.example")
+    assert :ok = SymphonyElixir.Tracker.prepare_workspace("/tmp/not-used", issue, nil)
   end
 
   test "workflow control enriches a labeled issue and reconstructs an authorized answer" do

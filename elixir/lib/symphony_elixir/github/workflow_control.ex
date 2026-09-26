@@ -138,9 +138,15 @@ defmodule SymphonyElixir.GitHub.WorkflowControl do
   @spec derive([map()], map(), [String.t()]) :: derived_state()
   def derive(comments, review_context, authorized_associations)
       when is_list(comments) and is_map(review_context) and is_list(authorized_associations) do
+    derive(comments, review_context, authorized_associations, nil)
+  end
+
+  @spec derive([map()], map(), [String.t()], String.t() | nil) :: derived_state()
+  def derive(comments, review_context, authorized_associations, trusted_bot_login)
+      when is_list(comments) and is_map(review_context) and is_list(authorized_associations) do
     authorized = authorized_associations |> Enum.map(&normalize_association/1) |> MapSet.new()
 
-    case latest_checkpoint(comments, authorized) do
+    case latest_checkpoint(comments, authorized, trusted_bot_login) do
       nil ->
         %{checkpoint: nil, trigger: nil, dispatchable: true}
 
@@ -182,9 +188,9 @@ defmodule SymphonyElixir.GitHub.WorkflowControl do
 
   defp checkpoint_guidance(_checkpoint), do: nil
 
-  defp latest_checkpoint(comments, authorized) do
+  defp latest_checkpoint(comments, authorized, trusted_bot_login) do
     comments
-    |> Enum.filter(&authorized?(&1, authorized))
+    |> Enum.filter(&(authorized?(&1, authorized) or trusted_bot?(&1, trusted_bot_login)))
     |> Enum.flat_map(fn comment ->
       case decode_checkpoint(comment["body"]) do
         {:ok, checkpoint} -> [%{comment: comment, checkpoint: checkpoint}]
@@ -350,6 +356,13 @@ defmodule SymphonyElixir.GitHub.WorkflowControl do
   defp authorized?(event, authorized) do
     MapSet.member?(authorized, normalize_association(event["author_association"]))
   end
+
+  defp trusted_bot?(event, trusted_bot_login) when is_binary(trusted_bot_login) do
+    get_in(event, ["user", "login"]) == trusted_bot_login and
+      get_in(event, ["user", "type"]) == "Bot"
+  end
+
+  defp trusted_bot?(_event, _trusted_bot_login), do: false
 
   defp event_payload(event, kind) do
     %{

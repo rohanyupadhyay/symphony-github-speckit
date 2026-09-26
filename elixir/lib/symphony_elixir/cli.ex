@@ -3,6 +3,7 @@ defmodule SymphonyElixir.CLI do
   Escript entrypoint for running Symphony with an explicit WORKFLOW.md path.
   """
 
+  alias SymphonyElixir.GitHub.AppCLI
   alias SymphonyElixir.LogFile
 
   @acknowledgement_switch :i_understand_that_this_will_be_running_without_the_usual_guardrails
@@ -14,6 +15,7 @@ defmodule SymphonyElixir.CLI do
           set_workflow_file_path: (String.t() -> :ok | {:error, term()}),
           set_logs_root: (String.t() -> :ok | {:error, term()}),
           set_server_port_override: (non_neg_integer() | nil -> :ok | {:error, term()}),
+          github_app_command: ([String.t()] -> :ok | {:error, term()}),
           ensure_all_started: (-> ensure_started_result())
         }
 
@@ -29,14 +31,29 @@ defmodule SymphonyElixir.CLI do
       :ok ->
         wait_for_shutdown()
 
+      :command_ok ->
+        System.halt(0)
+
       {:error, message} ->
-        IO.puts(:stderr, message)
+        IO.puts(:stderr, format_error(message))
         System.halt(1)
     end
   end
 
-  @spec evaluate([String.t()], deps()) :: :ok | {:error, String.t()}
-  def evaluate(args, deps \\ runtime_deps()) do
+  @spec evaluate([String.t()]) :: :ok | :command_ok | {:error, term()}
+  def evaluate(args), do: evaluate(args, runtime_deps())
+
+  @spec evaluate([String.t()], deps()) :: :ok | :command_ok | {:error, term()}
+  def evaluate(["github-app" | command_args], deps) do
+    command = Map.get(deps, :github_app_command, &AppCLI.run/1)
+
+    case command.(command_args) do
+      :ok -> :command_ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def evaluate(args, deps) do
     case OptionParser.parse(args, strict: @switches) do
       {opts, [], []} ->
         with :ok <- require_guardrails_acknowledgement(opts),
@@ -82,15 +99,20 @@ defmodule SymphonyElixir.CLI do
   end
 
   @spec runtime_deps() :: deps()
+  @spec runtime_deps((-> ensure_started_result())) :: deps()
   defp runtime_deps(ensure_all_started \\ fn -> Application.ensure_all_started(:symphony_elixir) end) do
     %{
       file_regular?: &File.regular?/1,
       set_workflow_file_path: &SymphonyElixir.Workflow.set_workflow_file_path/1,
       set_logs_root: &set_logs_root/1,
       set_server_port_override: &set_server_port_override/1,
+      github_app_command: &AppCLI.run/1,
       ensure_all_started: ensure_all_started
     }
   end
+
+  defp format_error(message) when is_binary(message), do: message
+  defp format_error(message), do: inspect(message)
 
   defp maybe_set_logs_root(opts, deps) do
     case Keyword.get_values(opts, :logs_root) do

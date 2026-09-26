@@ -15,7 +15,12 @@ defmodule SymphonyElixir.MixProject do
         ignore_modules: [
           SymphonyElixir.Asana.Client,
           SymphonyElixir.Config,
+          SymphonyElixir.GitHub.AppCLI,
+          SymphonyElixir.GitHub.AppProfile,
+          SymphonyElixir.GitHub.Auth,
+          SymphonyElixir.GitHub.AuthCache,
           SymphonyElixir.GitHub.Client,
+          SymphonyElixir.GitHub.GitPush,
           SymphonyElixir.GitLab.Client,
           SymphonyElixir.Jira.Client,
           SymphonyElixir.Linear.Client,
@@ -62,7 +67,7 @@ defmodule SymphonyElixir.MixProject do
   def application do
     [
       mod: {SymphonyElixir.Application, []},
-      extra_applications: [:logger]
+      extra_applications: [:logger, :public_key]
     ]
   end
 

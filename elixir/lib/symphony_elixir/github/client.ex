@@ -5,7 +5,7 @@ defmodule SymphonyElixir.GitHub.Client do
 
   require Logger
   alias SymphonyElixir.Config
-  alias SymphonyElixir.GitHub.WorkflowControl
+  alias SymphonyElixir.GitHub.{Auth, WorkflowControl}
   alias SymphonyElixir.Tracker.Issue
 
   @default_api_url "https://api.github.com"
@@ -22,12 +22,20 @@ defmodule SymphonyElixir.GitHub.Client do
   def secret_environment_names(tracker_settings) do
     provider = provider_settings(tracker_settings)
 
-    [
+    token_names = [
       "GITHUB_TOKEN",
       "GH_TOKEN",
       "GITHUB_ENTERPRISE_TOKEN",
       "GH_ENTERPRISE_TOKEN" | env_reference_names([provider["token"]])
     ]
+
+    app_names =
+      case provider["auth"] do
+        %{"kind" => "github_app"} -> Auth.secret_environment_names(provider)
+        _ -> []
+      end
+
+    (token_names ++ app_names)
     |> Enum.uniq()
   end
 
@@ -54,6 +62,41 @@ defmodule SymphonyElixir.GitHub.Client do
   end
 
   @doc false
+  @spec perform_request_for_test(
+          String.t(),
+          String.t(),
+          map(),
+          term(),
+          map(),
+          function(),
+          function(),
+          DateTime.t()
+        ) :: {:ok, map()} | {:error, term()}
+  def perform_request_for_test(
+        method,
+        path,
+        params,
+        body,
+        tracker_settings,
+        transport_fun,
+        auth_request_fun,
+        now
+      ) do
+    with {:ok, github_settings} <- settings(tracker_settings) do
+      perform_authenticated_request(
+        method,
+        path,
+        params,
+        body,
+        github_settings,
+        transport_fun,
+        auth_request_fun: auth_request_fun,
+        now: now
+      )
+    end
+  end
+
+  @doc false
   @spec normalize_issue_for_test(map(), String.t()) :: Issue.t() | nil
   def normalize_issue_for_test(issue, repo) when is_map(issue) and is_binary(repo) do
     normalize_issue(issue, repo)
@@ -65,7 +108,19 @@ defmodule SymphonyElixir.GitHub.Client do
   def enrich_issue_for_test(%Issue{} = issue, tracker_settings, request_fun)
       when is_map(tracker_settings) and is_function(request_fun, 5) do
     with {:ok, github_settings} <- settings(tracker_settings) do
-      enrich_issue(issue, github_settings, request_fun)
+      enrich_issue(issue, github_settings, request_fun, &Auth.identity/1)
+    end
+  end
+
+  @doc false
+  @spec enrich_issue_for_test(Issue.t(), map(), function(), keyword()) ::
+          {:ok, Issue.t()} | {:error, term()}
+  def enrich_issue_for_test(%Issue{} = issue, tracker_settings, request_fun, opts)
+      when is_map(tracker_settings) and is_function(request_fun, 5) and is_list(opts) do
+    identity_fun = Keyword.get(opts, :identity_fun, &Auth.identity/1)
+
+    with {:ok, github_settings} <- settings(tracker_settings) do
+      enrich_issue(issue, github_settings, request_fun, identity_fun)
     end
   end
 
@@ -192,7 +247,7 @@ defmodule SymphonyElixir.GitHub.Client do
   defp continue_issue_id_fetch(%{} = raw_issue, rest, settings, request_fun, acc) do
     case normalize_issue(raw_issue, settings.repo) do
       %Issue{} = issue ->
-        with {:ok, enriched_issue} <- enrich_issue(issue, settings, request_fun) do
+        with {:ok, enriched_issue} <- enrich_issue(issue, settings, request_fun, &Auth.identity/1) do
           fetch_issue_ids(rest, settings, request_fun, [enriched_issue | acc])
         end
 
@@ -303,11 +358,58 @@ defmodule SymphonyElixir.GitHub.Client do
   end
 
   defp perform_request(method, path, params, body, settings) do
+    perform_authenticated_request(method, path, params, body, settings, &perform_http_request/5, [])
+  end
+
+  defp perform_authenticated_request(method, path, params, body, settings, transport_fun, auth_opts) do
+    auth_opts =
+      case Keyword.fetch(auth_opts, :auth_request_fun) do
+        {:ok, request_fun} -> Keyword.put(auth_opts, :request_fun, request_fun)
+        :error -> auth_opts
+      end
+
+    with {:ok, token} <- Auth.token(settings.auth, auth_opts),
+         {:ok, response} <-
+           transport_fun.(method, settings.api_url <> path, github_headers(token), params, body) do
+      maybe_retry_unauthorized(
+        response,
+        method,
+        path,
+        params,
+        body,
+        settings,
+        transport_fun,
+        auth_opts
+      )
+    end
+  end
+
+  defp maybe_retry_unauthorized(
+         %{status: 401},
+         method,
+         path,
+         params,
+         body,
+         %{auth: %{kind: :github_app} = auth} = settings,
+         transport_fun,
+         auth_opts
+       ) do
+    :ok = Auth.invalidate(auth)
+
+    with {:ok, token} <- Auth.token(auth, auth_opts) do
+      transport_fun.(method, settings.api_url <> path, github_headers(token), params, body)
+    end
+  end
+
+  defp maybe_retry_unauthorized(response, _method, _path, _params, _body, _settings, _transport_fun, _auth_opts),
+    do: {:ok, response}
+
+  defp perform_http_request(method, url, headers, params, body) do
     with {:ok, request_method} <- request_method(method) do
       request_opts = [
         method: request_method,
-        url: settings.api_url <> path,
-        headers: github_headers(settings.token),
+        url: url,
+        headers: headers,
         params: params,
         connect_options: [timeout: 30_000]
       ]
@@ -325,7 +427,6 @@ defmodule SymphonyElixir.GitHub.Client do
     provider = provider_settings(tracker_settings)
     api_url = provider["api_url"] || @default_api_url
     repo = resolve_setting(provider["repo"], System.get_env("GITHUB_REPO"))
-    token = resolve_setting(provider["token"], System.get_env("GITHUB_TOKEN"))
 
     cond do
       not valid_api_url?(api_url) ->
@@ -337,18 +438,17 @@ defmodule SymphonyElixir.GitHub.Client do
       not valid_repo?(repo) ->
         {:error, :invalid_github_repo}
 
-      not present_string?(token) ->
-        {:error, :missing_github_token}
-
       true ->
-        {:ok,
-         %{
-           api_url: String.trim_trailing(api_url, "/"),
-           repo: repo,
-           token: token,
-           provider: provider,
-           required_labels: Map.get(tracker_settings, :required_labels, [])
-         }}
+        with {:ok, auth} <- Auth.config(provider, repo) do
+          {:ok,
+           %{
+             api_url: String.trim_trailing(api_url, "/"),
+             repo: repo,
+             auth: auth,
+             provider: provider,
+             required_labels: Map.get(tracker_settings, :required_labels, [])
+           }}
+        end
     end
   end
 
@@ -439,7 +539,7 @@ defmodule SymphonyElixir.GitHub.Client do
 
   defp enrich_issues(issues, settings, request_fun) do
     Enum.reduce_while(issues, {:ok, []}, fn issue, {:ok, acc} ->
-      case enrich_issue(issue, settings, request_fun) do
+      case enrich_issue(issue, settings, request_fun, &Auth.identity/1) do
         {:ok, enriched} -> {:cont, {:ok, [enriched | acc]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -450,21 +550,24 @@ defmodule SymphonyElixir.GitHub.Client do
     end
   end
 
-  defp enrich_issue(%Issue{} = issue, settings, request_fun) do
+  defp enrich_issue(%Issue{} = issue, settings, request_fun, identity_fun) do
     if WorkflowControl.enabled?(settings.provider) and workflow_candidate?(issue, settings.required_labels) do
-      with {:ok, comments} <- fetch_collection(issue_comments_path(settings, issue.id), settings, request_fun),
+      with {:ok, trusted_bot_login} <- trusted_bot_login(settings.auth, identity_fun),
+           {:ok, comments} <- fetch_collection(issue_comments_path(settings, issue.id), settings, request_fun),
            initial <-
              WorkflowControl.derive(
                comments,
                %{},
-               WorkflowControl.authorized_associations(settings.provider)
+               WorkflowControl.authorized_associations(settings.provider),
+               trusted_bot_login
              ),
            {:ok, review_context} <- maybe_fetch_review_context(initial.checkpoint, settings, request_fun) do
         derived =
           WorkflowControl.derive(
             comments,
             review_context,
-            WorkflowControl.authorized_associations(settings.provider)
+            WorkflowControl.authorized_associations(settings.provider),
+            trusted_bot_login
           )
 
         control = %{
@@ -479,6 +582,16 @@ defmodule SymphonyElixir.GitHub.Client do
       end
     else
       {:ok, issue}
+    end
+  end
+
+  defp trusted_bot_login(%{kind: :token}, _identity_fun), do: {:ok, nil}
+
+  defp trusted_bot_login(%{kind: :github_app} = auth, identity_fun) do
+    case identity_fun.(auth) do
+      {:ok, %{login: login}} when is_binary(login) -> {:ok, login}
+      {:error, _reason} = error -> error
+      _ -> {:error, :invalid_github_app_identity}
     end
   end
 

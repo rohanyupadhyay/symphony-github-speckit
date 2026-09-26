@@ -5,7 +5,7 @@ defmodule SymphonyElixir.GitHub.Adapter do
 
   @behaviour SymphonyElixir.Tracker
 
-  alias SymphonyElixir.GitHub.{AgentTool, Client, WorkflowControl}
+  alias SymphonyElixir.GitHub.{AgentTool, Client, GitPush, WorkflowControl}
   alias SymphonyElixir.Tracker.Issue
 
   @active_states ["open"]
@@ -41,6 +41,13 @@ defmodule SymphonyElixir.GitHub.Adapter do
 
   @spec execute_agent_tool(String.t(), term(), keyword()) :: map()
   def execute_agent_tool(tool, arguments, opts), do: AgentTool.execute(tool, arguments, opts)
+
+  @spec prepare_workspace(Path.t(), Issue.t(), String.t() | nil) :: :ok | {:error, term()}
+  def prepare_workspace(_workspace, _issue, worker_host) when is_binary(worker_host), do: :ok
+
+  def prepare_workspace(workspace, _issue, nil) do
+    GitPush.prepare_workspace(workspace, SymphonyElixir.Config.settings!().tracker)
+  end
 
   @spec secret_environment_names(map()) :: [String.t()]
   def secret_environment_names(tracker_settings), do: Client.secret_environment_names(tracker_settings)
