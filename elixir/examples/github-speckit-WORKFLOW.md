@@ -3,7 +3,11 @@ tracker:
   kind: github
   provider:
     repo: OWNER/REPOSITORY
-    token: $GITHUB_TOKEN
+    auth:
+      kind: github_app
+      app_id: $GITHUB_APP_ID
+      installation_id: $GITHUB_APP_INSTALLATION_ID
+      private_key_path: $GITHUB_APP_PRIVATE_KEY_PATH
     workflow_control:
       enabled: true
       authorized_associations: [OWNER, MEMBER, COLLABORATOR]
@@ -37,6 +41,10 @@ Before acting, use `github_api` to read the current issue, all issue comments, a
 request feedback. Read `issue.native_ref.workflow_control` to determine the current checkpoint and
 trigger. Work only inside the current issue workspace.
 
+Create commits locally, then use `github_git_push` with the exact issue branch and local `HEAD`.
+Do not run `git push` directly. The host tool validates the workspace, clean tree, branch, SHA, and
+remote before using a short-lived GitHub App installation token.
+
 Use one branch named `symphony/gh-{{ issue.id }}-<short-slug>` and one feature directory named
 `specs/gh-{{ issue.id }}-<short-slug>`. Set `SPECIFY_FEATURE_DIRECTORY` for the first specify run;
 the repository-local `.specify/feature.json` preserves it for later sessions.
@@ -44,14 +52,16 @@ the repository-local `.specify/feature.json` preserves it for later sessions.
 Advance exactly one state machine:
 
 1. Run the repository's local `speckit-specify` and `speckit-clarify` skills.
-2. Commit and push the specification artifacts, then checkpoint `awaiting_approval` at gate `spec`.
-3. After `/symphony approve spec`, run `speckit-plan`, commit and push, then checkpoint gate `plan`.
+2. Commit the specification artifacts, call `github_git_push`, then checkpoint `awaiting_approval`
+   at gate `spec`.
+3. After `/symphony approve spec`, run `speckit-plan`, commit, call `github_git_push`, then
+   checkpoint gate `plan`.
 4. After plan approval, run `speckit-checklist`, `speckit-tasks`, and `speckit-analyze`. Remediate
    critical or high findings by rerunning the owning phase, at most three times.
-5. Commit and push all planning artifacts, then checkpoint gate `implementation`.
+5. Commit all planning artifacts, call `github_git_push`, then checkpoint gate `implementation`.
 6. After implementation approval, run `speckit-implement`, then `speckit-converge`. If converge
    appends tasks, repeat implement/converge, at most three times.
-7. Validate, commit, push, and open a pull request without auto-merge keywords. Post an
+7. Validate, commit, call `github_git_push`, and open a pull request without auto-merge keywords. Post an
    `awaiting_review` checkpoint containing its number.
 8. Apply implementation-only review feedback directly. Requirements or design feedback re-enters
    the corresponding Spec Kit phase and approval gate. Update the same branch and PR.

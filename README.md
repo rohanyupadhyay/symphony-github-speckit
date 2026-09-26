@@ -37,7 +37,8 @@ help with the setup:
 > https://github.com/rohanyupadhyay/symphony-plus/blob/main/elixir/README.md
 
 See [GitHub workflow control](elixir/docs/github-workflow-control.md) for the Symphony Plus
-extensions and the reusable workflow template.
+extensions, built-in GitHub App setup, and the reusable workflow template. Each operator creates
+and owns a private App; Symphony Plus never ships or hosts a shared private key.
 
 ---
 
