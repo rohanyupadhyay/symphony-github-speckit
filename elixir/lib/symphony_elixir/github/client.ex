@@ -5,7 +5,7 @@ defmodule SymphonyElixir.GitHub.Client do
 
   require Logger
   alias SymphonyElixir.Config
-  alias SymphonyElixir.GitHub.WorkflowControl
+  alias SymphonyElixir.GitHub.{Auth, WorkflowControl}
   alias SymphonyElixir.Tracker.Issue
 
   @default_api_url "https://api.github.com"
@@ -22,12 +22,20 @@ defmodule SymphonyElixir.GitHub.Client do
   def secret_environment_names(tracker_settings) do
     provider = provider_settings(tracker_settings)
 
-    [
+    token_names = [
       "GITHUB_TOKEN",
       "GH_TOKEN",
       "GITHUB_ENTERPRISE_TOKEN",
       "GH_ENTERPRISE_TOKEN" | env_reference_names([provider["token"]])
     ]
+
+    app_names =
+      case provider["auth"] do
+        %{"kind" => "github_app"} -> Auth.secret_environment_names(provider)
+        _ -> []
+      end
+
+    (token_names ++ app_names)
     |> Enum.uniq()
   end
 
@@ -50,6 +58,41 @@ defmodule SymphonyElixir.GitHub.Client do
 
     with {:ok, github_settings} <- settings(tracker_settings) do
       request_fun.(method, path, params, body, github_settings)
+    end
+  end
+
+  @doc false
+  @spec perform_request_for_test(
+          String.t(),
+          String.t(),
+          map(),
+          term(),
+          map(),
+          function(),
+          function(),
+          DateTime.t()
+        ) :: {:ok, map()} | {:error, term()}
+  def perform_request_for_test(
+        method,
+        path,
+        params,
+        body,
+        tracker_settings,
+        transport_fun,
+        auth_request_fun,
+        now
+      ) do
+    with {:ok, github_settings} <- settings(tracker_settings) do
+      perform_authenticated_request(
+        method,
+        path,
+        params,
+        body,
+        github_settings,
+        transport_fun,
+        auth_request_fun: auth_request_fun,
+        now: now
+      )
     end
   end
 
@@ -303,11 +346,58 @@ defmodule SymphonyElixir.GitHub.Client do
   end
 
   defp perform_request(method, path, params, body, settings) do
+    perform_authenticated_request(method, path, params, body, settings, &perform_http_request/5, [])
+  end
+
+  defp perform_authenticated_request(method, path, params, body, settings, transport_fun, auth_opts) do
+    auth_opts =
+      case Keyword.fetch(auth_opts, :auth_request_fun) do
+        {:ok, request_fun} -> Keyword.put(auth_opts, :request_fun, request_fun)
+        :error -> auth_opts
+      end
+
+    with {:ok, token} <- Auth.token(settings.auth, auth_opts),
+         {:ok, response} <-
+           transport_fun.(method, settings.api_url <> path, github_headers(token), params, body) do
+      maybe_retry_unauthorized(
+        response,
+        method,
+        path,
+        params,
+        body,
+        settings,
+        transport_fun,
+        auth_opts
+      )
+    end
+  end
+
+  defp maybe_retry_unauthorized(
+         %{status: 401},
+         method,
+         path,
+         params,
+         body,
+         %{auth: %{kind: :github_app} = auth} = settings,
+         transport_fun,
+         auth_opts
+       ) do
+    :ok = Auth.invalidate(auth)
+
+    with {:ok, token} <- Auth.token(auth, auth_opts) do
+      transport_fun.(method, settings.api_url <> path, github_headers(token), params, body)
+    end
+  end
+
+  defp maybe_retry_unauthorized(response, _method, _path, _params, _body, _settings, _transport_fun, _auth_opts),
+    do: {:ok, response}
+
+  defp perform_http_request(method, url, headers, params, body) do
     with {:ok, request_method} <- request_method(method) do
       request_opts = [
         method: request_method,
-        url: settings.api_url <> path,
-        headers: github_headers(settings.token),
+        url: url,
+        headers: headers,
         params: params,
         connect_options: [timeout: 30_000]
       ]
@@ -325,7 +415,6 @@ defmodule SymphonyElixir.GitHub.Client do
     provider = provider_settings(tracker_settings)
     api_url = provider["api_url"] || @default_api_url
     repo = resolve_setting(provider["repo"], System.get_env("GITHUB_REPO"))
-    token = resolve_setting(provider["token"], System.get_env("GITHUB_TOKEN"))
 
     cond do
       not valid_api_url?(api_url) ->
@@ -337,18 +426,17 @@ defmodule SymphonyElixir.GitHub.Client do
       not valid_repo?(repo) ->
         {:error, :invalid_github_repo}
 
-      not present_string?(token) ->
-        {:error, :missing_github_token}
-
       true ->
-        {:ok,
-         %{
-           api_url: String.trim_trailing(api_url, "/"),
-           repo: repo,
-           token: token,
-           provider: provider,
-           required_labels: Map.get(tracker_settings, :required_labels, [])
-         }}
+        with {:ok, auth} <- Auth.config(provider, repo) do
+          {:ok,
+           %{
+             api_url: String.trim_trailing(api_url, "/"),
+             repo: repo,
+             auth: auth,
+             provider: provider,
+             required_labels: Map.get(tracker_settings, :required_labels, [])
+           }}
+        end
     end
   end
 
