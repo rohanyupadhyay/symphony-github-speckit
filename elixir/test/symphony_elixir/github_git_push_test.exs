@@ -65,8 +65,8 @@ defmodule SymphonyElixir.GitHub.GitPushTest do
   test "pushes only the current clean issue branch and never returns the token", context do
     parent = self()
 
-    runner = fn workspace, branch, token ->
-      send(parent, {:push, workspace, branch, token})
+    runner = fn workspace, remote_url, branch, token ->
+      send(parent, {:push, workspace, remote_url, branch, token})
       {:ok, "pushed"}
     end
 
@@ -82,7 +82,8 @@ defmodule SymphonyElixir.GitHub.GitPushTest do
              )
 
     assert head_sha == context.head_sha
-    assert_received {:push, workspace, "symphony/gh-42-add-auth", "short-lived-secret"}
+    assert_received {:push, workspace, "https://github.com/octo/repo.git", "symphony/gh-42-add-auth", "short-lived-secret"}
+
     assert workspace == context.workspace
     refute inspect(%{branch: "symphony/gh-42-add-auth", head_sha: head_sha}) =~ "short-lived-secret"
   end
@@ -94,7 +95,7 @@ defmodule SymphonyElixir.GitHub.GitPushTest do
       workspace_root: context.root,
       issue: context.issue,
       token_fun: fn _auth -> flunk("invalid pushes must not mint a token") end,
-      push_runner: fn _, _, _ -> flunk("invalid pushes must not run git push") end
+      push_runner: fn _, _, _, _ -> flunk("invalid pushes must not run git push") end
     ]
 
     arguments = %{"branch" => "symphony/gh-42-add-auth", "head_sha" => context.head_sha}
@@ -117,6 +118,36 @@ defmodule SymphonyElixir.GitHub.GitPushTest do
 
     git!(context.workspace, ["remote", "set-url", "origin", "https://github.com/octo/other.git"])
     assert {:error, :github_push_remote_mismatch} = GitPush.push(arguments, base_opts)
+  end
+
+  test "uses the validated fetch URL even when origin has a different push URL", context do
+    git!(context.workspace, [
+      "remote",
+      "set-url",
+      "--push",
+      "origin",
+      "https://github.com/attacker/other.git"
+    ])
+
+    parent = self()
+
+    assert {:ok, _result} =
+             GitPush.push(
+               %{"branch" => "symphony/gh-42-add-auth", "head_sha" => context.head_sha},
+               tracker_settings: context.settings,
+               workspace: context.workspace,
+               workspace_root: context.root,
+               issue: context.issue,
+               token_fun: fn _auth -> {:ok, "short-lived-secret"} end,
+               push_runner: fn workspace, remote_url, branch, _token ->
+                 send(parent, {:push_target, workspace, remote_url, branch})
+                 {:ok, "pushed"}
+               end
+             )
+
+    assert_received {:push_target, workspace, "https://github.com/octo/repo.git", "symphony/gh-42-add-auth"}
+
+    assert workspace == context.workspace
   end
 
   defp git!(workspace, args) do

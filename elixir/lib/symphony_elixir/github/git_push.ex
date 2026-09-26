@@ -32,7 +32,7 @@ defmodule SymphonyElixir.GitHub.GitPush do
     branch = arguments["branch"]
     expected_sha = arguments["head_sha"]
     token_fun = Keyword.get(opts, :token_fun, &Auth.token/1)
-    push_runner = Keyword.get(opts, :push_runner, &run_authenticated_push/3)
+    push_runner = Keyword.get(opts, :push_runner, &run_authenticated_push/4)
 
     with :ok <- validate_local_worker(worker_host),
          :ok <- validate_workspace(workspace, workspace_root, issue),
@@ -47,7 +47,7 @@ defmodule SymphonyElixir.GitHub.GitPush do
          :ok <- validate_remote(remote_url, repository),
          {:ok, %{kind: :github_app} = auth} <- Auth.config(provider, repository),
          {:ok, token} <- token_fun.(auth),
-         {:ok, _output} <- push_runner.(workspace, branch, token) do
+         {:ok, _output} <- push_runner.(workspace, remote_url, branch, token) do
       {:ok, %{branch: branch, head_sha: head_sha}}
     else
       {:ok, dirty} when is_binary(dirty) and dirty != "" -> {:error, :github_push_dirty_workspace}
@@ -133,7 +133,7 @@ defmodule SymphonyElixir.GitHub.GitPush do
     _ -> {:error, :github_git_command_failed}
   end
 
-  defp run_authenticated_push(workspace, branch, token) do
+  defp run_authenticated_push(workspace, remote_url, branch, token) do
     askpass_root =
       Path.join(System.tmp_dir!(), "symphony-git-askpass-#{System.unique_integer([:positive])}")
 
@@ -154,13 +154,23 @@ defmodule SymphonyElixir.GitHub.GitPush do
         {"GIT_ASKPASS", askpass},
         {"GIT_ASKPASS_REQUIRE", "force"},
         {"GIT_TERMINAL_PROMPT", "0"},
+        {"GIT_CONFIG_GLOBAL", "/dev/null"},
+        {"GIT_CONFIG_NOSYSTEM", "1"},
         {"SYMPHONY_GIT_USERNAME", "x-access-token"},
         {"SYMPHONY_GIT_PASSWORD", token}
       ]
 
       case System.cmd(
              "git",
-             ["-c", "credential.helper=", "push", "origin", "HEAD:refs/heads/#{branch}"],
+             [
+               "-c",
+               "credential.helper=",
+               "-c",
+               "core.hooksPath=/dev/null",
+               "push",
+               remote_url,
+               "HEAD:refs/heads/#{branch}"
+             ],
              cd: workspace,
              env: env,
              stderr_to_stdout: true
