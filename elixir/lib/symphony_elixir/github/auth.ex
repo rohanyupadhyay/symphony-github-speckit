@@ -65,6 +65,9 @@ defmodule SymphonyElixir.GitHub.Auth do
     end
   end
 
+  @spec token(config()) :: {:ok, String.t()} | {:error, term()}
+  def token(auth), do: token(auth, [])
+
   @spec token(config(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def token(%{kind: :token, token: token}, _opts), do: {:ok, token}
 

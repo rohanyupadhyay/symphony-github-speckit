@@ -3,11 +3,12 @@ defmodule SymphonyElixir.GitHub.AgentTool do
   Provider-native GitHub REST tool exposed to Codex app-server turns.
   """
 
-  alias SymphonyElixir.GitHub.{Client, WorkflowControl}
+  alias SymphonyElixir.GitHub.{Client, GitPush, WorkflowControl}
   alias SymphonyElixir.Tracker.Issue
 
   @github_api_tool "github_api"
   @workflow_checkpoint_tool "github_workflow_checkpoint"
+  @git_push_tool "github_git_push"
   @allowed_methods ["GET", "POST", "PATCH", "PUT", "DELETE"]
   @github_api_description """
   Execute a GitHub REST API request using Symphony's configured auth.
@@ -54,12 +55,22 @@ defmodule SymphonyElixir.GitHub.AgentTool do
       "pr_number" => %{"type" => ["integer", "null"]}
     }
   }
+  @git_push_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["branch", "head_sha"],
+    "properties" => %{
+      "branch" => %{"type" => "string"},
+      "head_sha" => %{"type" => "string"}
+    }
+  }
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts) do
     case tool do
       @github_api_tool -> execute_github_api(arguments, opts)
       @workflow_checkpoint_tool -> execute_workflow_checkpoint(arguments, opts)
+      @git_push_tool -> execute_git_push(arguments, opts)
       other -> unsupported_tool_response(other)
     end
   end
@@ -76,8 +87,28 @@ defmodule SymphonyElixir.GitHub.AgentTool do
         "name" => @workflow_checkpoint_tool,
         "description" => "Post a durable Symphony workflow checkpoint to the current GitHub issue using host authentication.",
         "inputSchema" => @workflow_checkpoint_schema
+      },
+      %{
+        "name" => @git_push_tool,
+        "description" => "Push the current clean issue branch with Symphony's host-side GitHub App authentication.",
+        "inputSchema" => @git_push_schema
       }
     ]
+  end
+
+  defp execute_git_push(arguments, opts) do
+    git_push = Keyword.get(opts, :git_push, &GitPush.push/2)
+
+    case git_push.(arguments, opts) do
+      {:ok, %{branch: branch, head_sha: head_sha}} ->
+        dynamic_tool_response(true, encode_payload(%{"branch" => branch, "head_sha" => head_sha}))
+
+      {:error, reason} ->
+        failure_response(tool_error_payload(reason))
+
+      _ ->
+        failure_response(tool_error_payload(:github_push_failed))
+    end
   end
 
   defp execute_workflow_checkpoint(arguments, opts) do
