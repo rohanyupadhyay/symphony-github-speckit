@@ -144,6 +144,58 @@ defmodule SymphonyElixir.GitHub.WorkflowControlTest do
              WorkflowControl.derive([checkpoint, unauthorized, marker, answer], %{}, @authorized)
   end
 
+  test "trusts exact App bot checkpoints without allowing the bot to answer itself" do
+    bot_checkpoint =
+      checkpoint_comment(14, "awaiting_input", %{"prompt" => "Choose a retention period."})
+      |> put_in(["author_association"], "NONE")
+      |> put_in(["user"], %{"login" => "verity-symphony[bot]", "type" => "Bot"})
+
+    bot_answer =
+      comment(15, "NONE", "Use forever")
+      |> put_in(["user"], %{"login" => "verity-symphony[bot]", "type" => "Bot"})
+
+    assert %{dispatchable: false, checkpoint: %{"state" => "awaiting_input"}, trigger: nil} =
+             WorkflowControl.derive(
+               [bot_checkpoint, bot_answer],
+               %{},
+               @authorized,
+               "verity-symphony[bot]"
+             )
+
+    human_answer = comment(16, "OWNER", "Use 30 days")
+
+    assert %{dispatchable: true, trigger: %{"kind" => "answer", "id" => 16}} =
+             WorkflowControl.derive(
+               [bot_checkpoint, bot_answer, human_answer],
+               %{},
+               @authorized,
+               "verity-symphony[bot]"
+             )
+  end
+
+  test "rejects spoofed or different bot checkpoint authors" do
+    checkpoint_body =
+      checkpoint_comment(17, "blocked", %{})
+      |> Map.fetch!("body")
+
+    spoofed_user = %{
+      "id" => 17,
+      "author_association" => "NONE",
+      "body" => checkpoint_body,
+      "user" => %{"login" => "verity-symphony[bot]", "type" => "User"}
+    }
+
+    other_bot = put_in(spoofed_user, ["user"], %{"login" => "other[bot]", "type" => "Bot"})
+
+    assert %{checkpoint: nil, dispatchable: true} =
+             WorkflowControl.derive(
+               [spoofed_user, other_bot],
+               %{},
+               @authorized,
+               "verity-symphony[bot]"
+             )
+  end
+
   test "approval gates accept only matching explicit commands and classify revisions" do
     checkpoint = checkpoint_comment(20, "awaiting_approval", %{"gate" => "plan"})
 

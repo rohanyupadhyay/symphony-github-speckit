@@ -108,7 +108,19 @@ defmodule SymphonyElixir.GitHub.Client do
   def enrich_issue_for_test(%Issue{} = issue, tracker_settings, request_fun)
       when is_map(tracker_settings) and is_function(request_fun, 5) do
     with {:ok, github_settings} <- settings(tracker_settings) do
-      enrich_issue(issue, github_settings, request_fun)
+      enrich_issue(issue, github_settings, request_fun, &Auth.identity/1)
+    end
+  end
+
+  @doc false
+  @spec enrich_issue_for_test(Issue.t(), map(), function(), keyword()) ::
+          {:ok, Issue.t()} | {:error, term()}
+  def enrich_issue_for_test(%Issue{} = issue, tracker_settings, request_fun, opts)
+      when is_map(tracker_settings) and is_function(request_fun, 5) and is_list(opts) do
+    identity_fun = Keyword.get(opts, :identity_fun, &Auth.identity/1)
+
+    with {:ok, github_settings} <- settings(tracker_settings) do
+      enrich_issue(issue, github_settings, request_fun, identity_fun)
     end
   end
 
@@ -235,7 +247,7 @@ defmodule SymphonyElixir.GitHub.Client do
   defp continue_issue_id_fetch(%{} = raw_issue, rest, settings, request_fun, acc) do
     case normalize_issue(raw_issue, settings.repo) do
       %Issue{} = issue ->
-        with {:ok, enriched_issue} <- enrich_issue(issue, settings, request_fun) do
+        with {:ok, enriched_issue} <- enrich_issue(issue, settings, request_fun, &Auth.identity/1) do
           fetch_issue_ids(rest, settings, request_fun, [enriched_issue | acc])
         end
 
@@ -527,7 +539,7 @@ defmodule SymphonyElixir.GitHub.Client do
 
   defp enrich_issues(issues, settings, request_fun) do
     Enum.reduce_while(issues, {:ok, []}, fn issue, {:ok, acc} ->
-      case enrich_issue(issue, settings, request_fun) do
+      case enrich_issue(issue, settings, request_fun, &Auth.identity/1) do
         {:ok, enriched} -> {:cont, {:ok, [enriched | acc]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -538,21 +550,24 @@ defmodule SymphonyElixir.GitHub.Client do
     end
   end
 
-  defp enrich_issue(%Issue{} = issue, settings, request_fun) do
+  defp enrich_issue(%Issue{} = issue, settings, request_fun, identity_fun) do
     if WorkflowControl.enabled?(settings.provider) and workflow_candidate?(issue, settings.required_labels) do
-      with {:ok, comments} <- fetch_collection(issue_comments_path(settings, issue.id), settings, request_fun),
+      with {:ok, trusted_bot_login} <- trusted_bot_login(settings.auth, identity_fun),
+           {:ok, comments} <- fetch_collection(issue_comments_path(settings, issue.id), settings, request_fun),
            initial <-
              WorkflowControl.derive(
                comments,
                %{},
-               WorkflowControl.authorized_associations(settings.provider)
+               WorkflowControl.authorized_associations(settings.provider),
+               trusted_bot_login
              ),
            {:ok, review_context} <- maybe_fetch_review_context(initial.checkpoint, settings, request_fun) do
         derived =
           WorkflowControl.derive(
             comments,
             review_context,
-            WorkflowControl.authorized_associations(settings.provider)
+            WorkflowControl.authorized_associations(settings.provider),
+            trusted_bot_login
           )
 
         control = %{
@@ -567,6 +582,16 @@ defmodule SymphonyElixir.GitHub.Client do
       end
     else
       {:ok, issue}
+    end
+  end
+
+  defp trusted_bot_login(%{kind: :token}, _identity_fun), do: {:ok, nil}
+
+  defp trusted_bot_login(%{kind: :github_app} = auth, identity_fun) do
+    case identity_fun.(auth) do
+      {:ok, %{login: login}} when is_binary(login) -> {:ok, login}
+      {:error, _reason} = error -> error
+      _ -> {:error, :invalid_github_app_identity}
     end
   end
 

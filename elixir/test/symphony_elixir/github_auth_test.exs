@@ -221,6 +221,60 @@ defmodule SymphonyElixir.GitHub.AuthTest do
     assert :counters.get(requests, 1) == 2
   end
 
+  test "client reconstruction trusts only the configured App bot checkpoint", %{key_path: key_path} do
+    issue =
+      Client.normalize_issue_for_test(
+        %{
+          "number" => 42,
+          "id" => 1_042,
+          "title" => "App checkpoint",
+          "body" => "Body",
+          "state" => "open",
+          "labels" => [%{"name" => "symphony"}]
+        },
+        "octo/repo"
+      )
+
+    checkpoint_body =
+      SymphonyElixir.GitHub.WorkflowControl.render_comment(%{
+        "state" => "blocked",
+        "phase" => "setup",
+        "summary" => "Waiting"
+      })
+
+    request_fun = fn "GET", "/repos/octo/repo/issues/42/comments", %{"page" => 1, "per_page" => 100}, nil, _settings ->
+      {:ok,
+       %{
+         status: 200,
+         body: [
+           %{
+             "id" => 1,
+             "body" => checkpoint_body,
+             "author_association" => "NONE",
+             "user" => %{"login" => "verity-symphony[bot]", "type" => "Bot"}
+           }
+         ]
+       }}
+    end
+
+    identity_fun = fn _auth ->
+      {:ok, %{id: 987, login: "verity-symphony[bot]", slug: "verity-symphony"}}
+    end
+
+    settings =
+      app_tracker_settings(key_path)
+      |> put_in(
+        [:provider, "workflow_control"],
+        %{"enabled" => true, "authorized_associations" => ["OWNER"]}
+      )
+
+    assert {:ok, enriched} =
+             Client.enrich_issue_for_test(issue, settings, request_fun, identity_fun: identity_fun)
+
+    refute enriched.dispatchable
+    assert get_in(enriched.native_ref, ["workflow_control", "state"]) == "blocked"
+  end
+
   defp app_auth(key_path) do
     %{
       kind: :github_app,
